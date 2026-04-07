@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 //import "github.com/webview/webview"
@@ -33,6 +35,7 @@ var (
 )
 
 const portCount = 10
+const serverStartupTimeout = 45 * time.Second
 
 // =============================
 // Domain model.
@@ -86,24 +89,54 @@ func main() {
 	http.HandleFunc("/api/label", handleSetLabel(stateCommands))
 	http.HandleFunc("/", handleRequest)
 
-	address := fmt.Sprintf(":%d", *portFlag)
-	log.Printf("startup: starting HTTP server on http://localhost%s", address)
+	address := fmt.Sprintf("127.0.0.1:%d", *portFlag)
+	log.Printf("startup: starting HTTP server on http://%s", address)
+	httpListener, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatalf("startup: listen failed: %v", err)
+	}
 	go func() {
-		err := http.ListenAndServe(address, nil)
+		err := http.Serve(httpListener, nil)
 		if err != nil {
 			log.Printf("shutdown: HTTP server stopped: %v", err)
 		}
 	}()
 
+	waitForServerReadiness(address, serverStartupTimeout)
+
 	window := webview.New(false)
 	defer window.Destroy()
 	window.SetTitle("DIO/DO Control · ECX-1000-2G")
 	window.SetSize(980, 760, webview.HintNone)
-	window.Navigate("http://localhost" + address)
+	window.Navigate("http://" + address)
 
 	log.Printf("webview: window started")
 	window.Run()
 	log.Printf("shutdown: webview stopped")
+}
+
+func waitForServerReadiness(address string, timeout time.Duration) {
+	httpClient := http.Client{Timeout: 600 * time.Millisecond}
+	deadline := time.Now().Add(timeout)
+	probeURL := "http://" + address + "/api/state"
+
+	for {
+		response, err := httpClient.Get(probeURL)
+		if err == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				log.Printf("startup: HTTP server ready at %s", probeURL)
+				return
+			}
+		}
+
+		if time.Now().After(deadline) {
+			log.Printf("startup: continue without readiness after timeout=%s", timeout)
+			return
+		}
+
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // =============================
