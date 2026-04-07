@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"github.com/webview/webview"
 )
+
+import "github.com/webview/webview"
 
 // =============================
 // Embedded static assets.
@@ -24,22 +24,48 @@ import (
 var staticFiles embed.FS
 
 var (
-	portFlag         = flag.Int("port", 8765, "web server port")
-	directoryFlag    = flag.String("directory", ".", "directory to serve files from")
-	dioValueFileFlag = flag.String("dio-value-file", "/sys/class/gpio/gpio0/value", "first DIO port value file")
+	portFlag                 = flag.Int("port", 8765, "web server port")
+	directoryFlag            = flag.String("directory", ".", "directory to serve files from")
+	dioValuePathTemplateFlag = flag.String("dio-value-path-template", "/sys/class/gpio/gpio%d/value", "DIO value file path template")
+	labelsFileFlag           = flag.String("labels-file", "dio-labels.json", "path to labels file")
 )
 
+const portCount = 10
+
 // =============================
-// DIO command pipeline.
+// Domain model.
 // =============================
 
-type dioCommand struct {
-	nextPower string
-	reply     chan dioReply
+type portState struct {
+	Port  int    `json:"port"`
+	Power string `json:"power"`
+	Label string `json:"label"`
 }
 
-type dioReply struct {
+type appState struct {
+	Ports []portState `json:"ports"`
+}
+
+type setPowerRequest struct {
+	Port  int    `json:"port"`
+	Power string `json:"power"`
+}
+
+type setLabelRequest struct {
+	Port  int    `json:"port"`
+	Label string `json:"label"`
+}
+
+type stateCommand struct {
+	kind  string
+	port  int
 	power string
+	label string
+	reply chan stateReply
+}
+
+type stateReply struct {
+	state appState
 	err   error
 }
 
@@ -50,11 +76,12 @@ type dioReply struct {
 func main() {
 	flag.Parse()
 
-	dioCommands := make(chan dioCommand)
-	go runFirstDIOOwner(dioCommands, *dioValueFileFlag)
+	stateCommands := make(chan stateCommand)
+	go runStateOwner(stateCommands, *dioValuePathTemplateFlag, *labelsFileFlag)
 
-	http.HandleFunc("/api/state", handleDIOState(dioCommands))
-	http.HandleFunc("/api/power", handleDIOPower(dioCommands))
+	http.HandleFunc("/api/state", handleGetState(stateCommands))
+	http.HandleFunc("/api/power", handleSetPower(stateCommands))
+	http.HandleFunc("/api/label", handleSetLabel(stateCommands))
 	http.HandleFunc("/", handleRequest)
 
 	address := fmt.Sprintf(":%d", *portFlag)
@@ -66,93 +93,109 @@ func main() {
 		}
 	}()
 
-	onPageLoaded := func(_ webview.WebView, loadedURL string) {
-		log.Printf("webview: loaded %s", loadedURL)
-	}
-
 	window := webview.New(false)
 	defer window.Destroy()
-
-	window.SetTitle("DIO Control · ECX-1000-2G")
-	window.SetSize(800, 600, webview.HintNone)
+	window.SetTitle("DIO/DO Control · ECX-1000-2G")
+	window.SetSize(980, 760, webview.HintNone)
 	window.Navigate("http://localhost" + address)
-	_ = window.Bind("onPageLoaded", onPageLoaded)
 
 	log.Printf("webview: window started")
 	window.Run()
 	log.Printf("shutdown: webview stopped")
 }
 
-func runFirstDIOOwner(dioCommands <-chan dioCommand, dioValueFile string) {
-	currentPower := "off"
-	log.Printf("dio: owner started, target=%s", dioValueFile)
+// =============================
+// State owner goroutine.
+// =============================
 
-	for command := range dioCommands {
-		if command.nextPower == "" {
-			command.reply <- dioReply{power: currentPower}
-			continue
+func runStateOwner(stateCommands <-chan stateCommand, dioValuePathTemplate string, labelsFile string) {
+	state := buildInitialState(loadLabels(labelsFile))
+	log.Printf("state: owner started with %d ports", len(state.Ports))
+
+	for command := range stateCommands {
+		switch command.kind {
+		case "get":
+			command.reply <- stateReply{state: cloneState(state)}
+		case "set_power":
+			resultState, err := applyPower(state, command.port, command.power, dioValuePathTemplate)
+			if err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			state = resultState
+			command.reply <- stateReply{state: cloneState(state)}
+		case "set_label":
+			resultState, err := applyLabel(state, command.port, command.label)
+			if err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			if err := saveLabels(labelsFile, resultState); err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			state = resultState
+			command.reply <- stateReply{state: cloneState(state)}
+		default:
+			command.reply <- stateReply{state: cloneState(state), err: errors.New("unknown command")}
 		}
-
-		if command.nextPower != "on" && command.nextPower != "off" {
-			command.reply <- dioReply{power: currentPower, err: errors.New("power must be on or off")}
-			continue
-		}
-
-		if err := writeFirstDIOPower(dioValueFile, command.nextPower); err != nil {
-			command.reply <- dioReply{power: currentPower, err: err}
-			continue
-		}
-
-		currentPower = command.nextPower
-		log.Printf("dio: first port set to %s", currentPower)
-		command.reply <- dioReply{power: currentPower}
 	}
 }
 
-func handleDIOState(dioCommands chan<- dioCommand) http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		log.Printf("http: %s %s", request.Method, request.URL.Path)
-		reply := make(chan dioReply, 1)
-		dioCommands <- dioCommand{reply: reply}
-		result := <-reply
-		if result.err != nil {
-			http.Error(writer, result.err.Error(), http.StatusInternalServerError)
-			return
+func buildInitialState(savedLabels map[int]string) appState {
+	ports := make([]portState, 0, portCount)
+	for portIndex := 1; portIndex <= portCount; portIndex++ {
+		label := savedLabels[portIndex]
+		if label == "" {
+			label = fmt.Sprintf("DIO %d", portIndex)
 		}
-		writeJSON(writer, map[string]string{"power": result.power})
+		ports = append(ports, portState{Port: portIndex, Power: "off", Label: label})
 	}
+	return appState{Ports: ports}
 }
 
-func handleDIOPower(dioCommands chan<- dioCommand) http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		log.Printf("http: %s %s", request.Method, request.URL.Path)
-		if request.Method != http.MethodPost {
-			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var apiRequest struct {
-			Power string `json:"power"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&apiRequest); err != nil {
-			http.Error(writer, "invalid json", http.StatusBadRequest)
-			return
-		}
-
-		reply := make(chan dioReply, 1)
-		dioCommands <- dioCommand{nextPower: apiRequest.Power, reply: reply}
-		result := <-reply
-		if result.err != nil {
-			http.Error(writer, result.err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(writer, map[string]string{"power": result.power})
+func applyPower(state appState, port int, nextPower string, dioValuePathTemplate string) (appState, error) {
+	if port < 1 || port > portCount {
+		return state, errors.New("invalid port")
 	}
+	if nextPower != "on" && nextPower != "off" {
+		return state, errors.New("power must be on or off")
+	}
+
+	if err := writeDIOPower(port, nextPower, dioValuePathTemplate); err != nil {
+		return state, err
+	}
+
+	nextState := cloneState(state)
+	nextState.Ports[port-1].Power = nextPower
+	log.Printf("dio: port=%d power=%s", port, nextPower)
+	return nextState, nil
 }
 
-func writeFirstDIOPower(dioValueFile string, nextPower string) error {
+func applyLabel(state appState, port int, nextLabel string) (appState, error) {
+	if port < 1 || port > portCount {
+		return state, errors.New("invalid port")
+	}
+	sanitizedLabel := strings.TrimSpace(nextLabel)
+	if sanitizedLabel == "" {
+		return state, errors.New("label is required")
+	}
+
+	nextState := cloneState(state)
+	nextState.Ports[port-1].Label = sanitizedLabel
+	log.Printf("dio: port=%d label=%s", port, sanitizedLabel)
+	return nextState, nil
+}
+
+func cloneState(source appState) appState {
+	copiedPorts := make([]portState, len(source.Ports))
+	copy(copiedPorts, source.Ports)
+	return appState{Ports: copiedPorts}
+}
+
+func writeDIOPower(port int, nextPower string, dioValuePathTemplate string) error {
 	if runtime.GOOS != "linux" {
-		log.Printf("dio: non-linux runtime detected, keeping in-memory state only")
+		log.Printf("dio: non-linux runtime, skip physical write for port=%d", port)
 		return nil
 	}
 
@@ -160,7 +203,101 @@ func writeFirstDIOPower(dioValueFile string, nextPower string) error {
 	if nextPower == "on" {
 		nextValue = "1"
 	}
-	return os.WriteFile(dioValueFile, []byte(nextValue), 0o644)
+	path := fmt.Sprintf(dioValuePathTemplate, port)
+	return os.WriteFile(path, []byte(nextValue), 0o644)
+}
+
+func loadLabels(labelsFile string) map[int]string {
+	fileData, err := os.ReadFile(labelsFile)
+	if err != nil {
+		return map[int]string{}
+	}
+
+	var labels map[int]string
+	if err := json.Unmarshal(fileData, &labels); err != nil {
+		return map[int]string{}
+	}
+	return labels
+}
+
+func saveLabels(labelsFile string, state appState) error {
+	labels := map[int]string{}
+	for _, singlePortState := range state.Ports {
+		labels[singlePortState.Port] = singlePortState.Label
+	}
+	fileData, err := json.MarshalIndent(labels, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(labelsFile, fileData, 0o644)
+}
+
+// =============================
+// HTTP handlers.
+// =============================
+
+func handleGetState(stateCommands chan<- stateCommand) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		log.Printf("http: %s %s", request.Method, request.URL.Path)
+		reply := make(chan stateReply, 1)
+		stateCommands <- stateCommand{kind: "get", reply: reply}
+		result := <-reply
+		if result.err != nil {
+			http.Error(writer, result.err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(writer, result.state)
+	}
+}
+
+func handleSetPower(stateCommands chan<- stateCommand) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		log.Printf("http: %s %s", request.Method, request.URL.Path)
+		if request.Method != http.MethodPost {
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var apiRequest setPowerRequest
+		if err := json.NewDecoder(request.Body).Decode(&apiRequest); err != nil {
+			http.Error(writer, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		reply := make(chan stateReply, 1)
+		stateCommands <- stateCommand{kind: "set_power", port: apiRequest.Port, power: apiRequest.Power, reply: reply}
+		result := <-reply
+		if result.err != nil {
+			http.Error(writer, result.err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(writer, result.state)
+	}
+}
+
+func handleSetLabel(stateCommands chan<- stateCommand) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		log.Printf("http: %s %s", request.Method, request.URL.Path)
+		if request.Method != http.MethodPost {
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var apiRequest setLabelRequest
+		if err := json.NewDecoder(request.Body).Decode(&apiRequest); err != nil {
+			http.Error(writer, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		reply := make(chan stateReply, 1)
+		stateCommands <- stateCommand{kind: "set_label", port: apiRequest.Port, label: apiRequest.Label, reply: reply}
+		result := <-reply
+		if result.err != nil {
+			http.Error(writer, result.err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(writer, result.state)
+	}
 }
 
 func writeJSON(writer http.ResponseWriter, payload any) {
@@ -168,28 +305,28 @@ func writeJSON(writer http.ResponseWriter, payload any) {
 	_ = json.NewEncoder(writer).Encode(payload)
 }
 
+// =============================
+// Static file serving.
+// =============================
+
 func handleRequest(writer http.ResponseWriter, request *http.Request) {
 	requestedFile := strings.TrimPrefix(request.URL.Path, "/")
 	if requestedFile == "" {
 		requestedFile = "index.html"
 	}
-	log.Printf("http: requested file=%s", requestedFile)
 
-	fullPathToFile := *directoryFlag + "/" + requestedFile
+	fullPathToFile := filepath.Join(*directoryFlag, requestedFile)
 	if fileExists(fullPathToFile) {
-		log.Printf("http: serving local file=%s", fullPathToFile)
 		http.ServeFile(writer, request, fullPathToFile)
 		return
 	}
 
 	if fileExistsInStatic(requestedFile) {
-		log.Printf("http: serving embedded file=%s", requestedFile)
 		fileData, err := staticFiles.ReadFile(filepath.Join("static", requestedFile))
 		if err != nil {
 			http.Error(writer, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-
 		writer.Header().Set("Content-Type", getContentType(requestedFile))
 		_, _ = writer.Write(fileData)
 		return

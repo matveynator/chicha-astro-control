@@ -3,45 +3,116 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DIO Power Control</title>
+  <title>DIO/DO Control</title>
   <style>
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
-    main { width: 360px; background: #1e293b; border-radius: 12px; padding: 20px; }
-    .row { margin: 12px 0; }
-    .buttons { display: flex; gap: 10px; }
-    button { flex: 1; border: 0; border-radius: 8px; padding: 10px; color: white; cursor: pointer; }
-    #on-button { background: #16a34a; }
-    #off-button { background: #dc2626; }
+    body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
+    main { max-width: 980px; margin: 20px auto; padding: 0 12px 20px; }
+    h1 { margin-bottom: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card { background: #1e293b; border-radius: 12px; padding: 14px; }
+    .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
+    .lamp { width: 14px; height: 14px; border-radius: 999px; background: #64748b; }
+    .lamp.on { background: #16a34a; box-shadow: 0 0 10px rgba(22, 163, 74, 0.6); }
+    .lamp.off { background: #6b7280; }
+    .button-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    button { border: 0; border-radius: 8px; padding: 8px 10px; color: white; cursor: pointer; }
+    .on-button { background: #16a34a; }
+    .off-button { background: #6b7280; }
+    .save-button { background: #2563eb; width: 100%; }
+    input { width: 100%; box-sizing: border-box; border: 1px solid #334155; border-radius: 8px; padding: 8px; margin-bottom: 8px; background: #0f172a; color: #e2e8f0; }
     #error-text { min-height: 20px; color: #fca5a5; }
   </style>
 </head>
 <body>
 <main>
-  <h1>DIO Port 1</h1>
-  <p class="row">Power: <strong id="power-text">unknown</strong></p>
-  <div class="buttons row">
-    <button id="on-button">Включить</button>
-    <button id="off-button">Выключить</button>
-  </div>
+  <h1>DIO / DO Ports</h1>
   <p id="error-text"></p>
+  <section id="ports-grid" class="grid"></section>
 </main>
-<script>
-  const applicationModel = { currentPower: "unknown", isPending: false, errorText: "" };
 
-  const powerTextElement = document.getElementById("power-text");
-  const onButtonElement = document.getElementById("on-button");
-  const offButtonElement = document.getElementById("off-button");
+<script>
+  const applicationModel = { portsByNumber: {}, requestInFlight: false, errorText: "" };
+
+  const portsGridElement = document.getElementById("ports-grid");
   const errorTextElement = document.getElementById("error-text");
 
   function renderFromModel() {
-    powerTextElement.textContent = applicationModel.currentPower;
-    onButtonElement.disabled = applicationModel.isPending;
-    offButtonElement.disabled = applicationModel.isPending;
     errorTextElement.textContent = applicationModel.errorText;
+    portsGridElement.innerHTML = "";
+
+    const sortedPortNumbers = Object.keys(applicationModel.portsByNumber).map(Number).sort(function sortAscending(leftNumber, rightNumber) {
+      return leftNumber - rightNumber;
+    });
+
+    sortedPortNumbers.forEach(function renderSinglePort(portNumber) {
+      const singlePortState = applicationModel.portsByNumber[portNumber];
+
+      const cardElement = document.createElement("article");
+      cardElement.className = "card";
+
+      const topRowElement = document.createElement("div");
+      topRowElement.className = "row";
+
+      const titleElement = document.createElement("strong");
+      titleElement.textContent = "Port " + portNumber;
+
+      const lampElement = document.createElement("span");
+      lampElement.className = "lamp " + singlePortState.power;
+
+      topRowElement.appendChild(titleElement);
+      topRowElement.appendChild(lampElement);
+
+      const buttonRowElement = document.createElement("div");
+      buttonRowElement.className = "button-row";
+
+      const onButtonElement = document.createElement("button");
+      onButtonElement.className = "on-button";
+      onButtonElement.textContent = "ON";
+      onButtonElement.disabled = applicationModel.requestInFlight;
+      onButtonElement.addEventListener("click", function onPowerOnClick() {
+        void sendPowerToServer(portNumber, "on");
+      });
+
+      const offButtonElement = document.createElement("button");
+      offButtonElement.className = "off-button";
+      offButtonElement.textContent = "OFF";
+      offButtonElement.disabled = applicationModel.requestInFlight;
+      offButtonElement.addEventListener("click", function onPowerOffClick() {
+        void sendPowerToServer(portNumber, "off");
+      });
+
+      buttonRowElement.appendChild(onButtonElement);
+      buttonRowElement.appendChild(offButtonElement);
+
+      const labelInputElement = document.createElement("input");
+      labelInputElement.value = singlePortState.label;
+      labelInputElement.placeholder = "Device label";
+      labelInputElement.disabled = applicationModel.requestInFlight;
+
+      const saveButtonElement = document.createElement("button");
+      saveButtonElement.className = "save-button";
+      saveButtonElement.textContent = "Сохранить";
+      saveButtonElement.disabled = applicationModel.requestInFlight;
+      saveButtonElement.addEventListener("click", function onSaveClick() {
+        void sendLabelToServer(portNumber, labelInputElement.value);
+      });
+
+      cardElement.appendChild(topRowElement);
+      cardElement.appendChild(buttonRowElement);
+      cardElement.appendChild(labelInputElement);
+      cardElement.appendChild(saveButtonElement);
+
+      portsGridElement.appendChild(cardElement);
+    });
   }
 
-  function applyServerState(serverState) {
-    applicationModel.currentPower = serverState.power;
+  function applyStateFromServer(serverState) {
+    const nextPortsByNumber = {};
+    serverState.ports.forEach(function addPortToMap(singlePortState) {
+      nextPortsByNumber[singlePortState.port] = singlePortState;
+    });
+
+    applicationModel.portsByNumber = nextPortsByNumber;
     applicationModel.errorText = "";
     renderFromModel();
   }
@@ -54,8 +125,8 @@
     return response.json();
   }
 
-  async function sendPowerToServer(nextPower) {
-    applicationModel.isPending = true;
+  async function sendPowerToServer(portNumber, nextPower) {
+    applicationModel.requestInFlight = true;
     applicationModel.errorText = "";
     renderFromModel();
 
@@ -63,30 +134,45 @@
       const response = await fetch("/api/power", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ power: nextPower })
+        body: JSON.stringify({ port: portNumber, power: nextPower })
       });
       if (!response.ok) {
         throw new Error(await response.text());
       }
-      applyServerState(await response.json());
+      applyStateFromServer(await response.json());
     } catch (requestError) {
       applicationModel.errorText = String(requestError);
     } finally {
-      applicationModel.isPending = false;
+      applicationModel.requestInFlight = false;
       renderFromModel();
     }
   }
 
-  onButtonElement.addEventListener("click", function onPowerOnClick() {
-    void sendPowerToServer("on");
-  });
+  async function sendLabelToServer(portNumber, nextLabel) {
+    applicationModel.requestInFlight = true;
+    applicationModel.errorText = "";
+    renderFromModel();
 
-  offButtonElement.addEventListener("click", function onPowerOffClick() {
-    void sendPowerToServer("off");
-  });
+    try {
+      const response = await fetch("/api/label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ port: portNumber, label: nextLabel })
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      applyStateFromServer(await response.json());
+    } catch (requestError) {
+      applicationModel.errorText = String(requestError);
+    } finally {
+      applicationModel.requestInFlight = false;
+      renderFromModel();
+    }
+  }
 
-  requestStateFromServer().then(applyServerState).catch(function onInitError(initError) {
-    applicationModel.errorText = String(initError);
+  requestStateFromServer().then(applyStateFromServer).catch(function onInitialError(initialError) {
+    applicationModel.errorText = String(initialError);
     renderFromModel();
   });
 

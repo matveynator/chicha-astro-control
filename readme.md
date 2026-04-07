@@ -1,28 +1,28 @@
 # terskol-astro-guide
 
-Минимальное desktop-приложение с **настоящим WebView окном** (не системный браузер) + HTTP API для управления питанием первого DIO порта.
+Desktop-приложение на WebView для управления 10 DIO/DO портами.
+
+## Что есть
+- 10 портов (1..10).
+- Для каждого порта:
+  - ON / OFF
+  - цветовая индикация: зеленый = включен, серый = выключен
+  - поле подписи устройства + кнопка «Сохранить»
+- Подписи сохраняются в `dio-labels.json`.
 
 ## Запуск
 
 ```bash
-go get github.com/webview/webview
 go run terskol-astro-guide.go
 ```
 
+## Флаги
+- `-port` HTTP порт (по умолчанию `8765`)
+- `-directory` локальная директория для статики
+- `-dio-value-path-template` путь-шаблон для файла DIO (по умолчанию `/sys/class/gpio/gpio%d/value`)
+- `-labels-file` файл подписей (по умолчанию `dio-labels.json`)
+
 ## API
-- `GET /api/state` -> `{ "power": "on"|"off" }`
-- `POST /api/power` с JSON `{ "power": "on"|"off" }`
-
-## DIO ECX-1000-2G
-По умолчанию запись идет в:
-- `/sys/class/gpio/gpio0/value`
-
-Можно поменять путь флагом:
-
-```bash
-go run terskol-astro-guide.go -dio-value-file /your/path/to/first/dio/value
-```
-
-## Локальная логика
-- Linux: запись `1/0` в файл DIO value.
-- Не Linux: состояние хранится в памяти (для отладки UI).
+- `GET /api/state`
+- `POST /api/power` body: `{ "port": 1, "power": "on" }`
+- `POST /api/label` body: `{ "port": 1, "label": "Pump" }`
