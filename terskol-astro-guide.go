@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -101,15 +102,42 @@ func runHTTPServer(httpServer *http.Server) {
 
 func runWebViewSupervisor(windowURL string) {
 	restartDelay := 1200 * time.Millisecond
+	fastExitCount := 0
+	browserFallbackWasStarted := false
+
 	for {
 		runDuration := runWebViewOnce(windowURL)
 		if runDuration >= 2*time.Second {
+			fastExitCount = 0
 			log.Printf("webview: window closed after %s; restarting in %s", runDuration, restartDelay)
 		} else {
+			fastExitCount++
 			log.Printf("webview: window exited too fast after %s; restarting in %s", runDuration, restartDelay)
+			if fastExitCount >= 3 && !browserFallbackWasStarted {
+				if err := openSystemBrowserWindow(windowURL); err != nil {
+					log.Printf("browser fallback: failed to open system browser: %v", err)
+				} else {
+					browserFallbackWasStarted = true
+					log.Printf("browser fallback: opened system browser at %s", windowURL)
+				}
+			}
 		}
 		time.Sleep(restartDelay)
 	}
+}
+
+func openSystemBrowserWindow(windowURL string) error {
+	var command *exec.Cmd
+
+	if runtime.GOOS == "darwin" {
+		command = exec.Command("open", windowURL)
+	} else if runtime.GOOS == "windows" {
+		command = exec.Command("cmd", "/c", "start", windowURL)
+	} else {
+		command = exec.Command("xdg-open", windowURL)
+	}
+
+	return command.Start()
 }
 
 func runWebViewOnce(windowURL string) time.Duration {
