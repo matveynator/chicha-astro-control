@@ -8,20 +8,19 @@
     body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
     main { max-width: 980px; margin: 20px auto; padding: 0 12px 20px; }
     h1 { margin-bottom: 10px; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .card { background: #1e293b; border-radius: 12px; padding: 14px; border: 1px solid #334155; box-shadow: 0 8px 20px rgba(0,0,0,0.25); }
-    .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
-    .lamp { width: 14px; height: 14px; border-radius: 999px; background: #64748b; }
-    .lamp.on { background: #16a34a; box-shadow: 0 0 10px rgba(22, 163, 74, 0.6); }
-    .lamp.off { background: #9ca3af; }
-    .button-row { display: flex; gap: 8px; margin-bottom: 10px; }
-    button { border: 0; border-radius: 8px; padding: 8px 10px; color: white; cursor: pointer; }
-    .on-button { background: #166534; }
-    .on-button.active { background: #22c55e; box-shadow: 0 0 14px rgba(34, 197, 94, 0.75); }
-    .off-button { background: #475569; }
-    .off-button.active { background: #94a3b8; color: #0f172a; }
-    .save-button { background: #2563eb; width: 100%; }
-    input { width: 100%; box-sizing: border-box; border: 1px solid #334155; border-radius: 8px; padding: 8px; margin-bottom: 8px; background: #0f172a; color: #e2e8f0; }
+    h2 { margin: 16px 0 8px; font-size: 18px; }
+    .line-list { display: flex; flex-direction: column; gap: 8px; }
+    .port-line { display: flex; align-items: center; gap: 8px; border-radius: 10px; padding: 8px; border: 1px solid #334155; }
+    .port-line.on { background: #14532d; border-color: #22c55e; }
+    .port-line.off { background: #7f1d1d; border-color: #ef4444; }
+    .port-meta { width: 88px; font-weight: 700; }
+    .label-view { flex: 1; font-weight: 600; }
+    .label-input { flex: 1; border: 1px solid #334155; border-radius: 8px; padding: 8px; background: #0f172a; color: #e2e8f0; }
+    .compact-actions { display: flex; gap: 6px; }
+    button { border: 0; border-radius: 8px; padding: 8px 10px; color: white; cursor: pointer; font-weight: 700; }
+    .toggle-button.on { background: #22c55e; color: #052e16; }
+    .toggle-button.off { background: #ef4444; }
+    .edit-button { background: #2563eb; }
     #error-text { min-height: 20px; color: #fca5a5; }
   </style>
 </head>
@@ -29,92 +28,125 @@
 <main>
   <h1>DIO / DO Ports</h1>
   <p id="error-text"></p>
-  <section id="ports-grid" class="grid"></section>
+  <section>
+    <h2>DI (input)</h2>
+    <div id="di-ports" class="line-list"></div>
+  </section>
+  <section>
+    <h2>DO (output)</h2>
+    <div id="do-ports" class="line-list"></div>
+  </section>
 </main>
 
 <script>
-  const applicationModel = { portsByNumber: {}, requestInFlight: false, errorText: "" };
+  const applicationModel = {
+    portsByKey: {},
+    editByKey: {},
+    requestInFlight: false,
+    errorText: ""
+  };
 
-  const portsGridElement = document.getElementById("ports-grid");
+  const diPortsElement = document.getElementById("di-ports");
+  const doPortsElement = document.getElementById("do-ports");
   const errorTextElement = document.getElementById("error-text");
+
+  function buildPortKey(directionName, portNumber) {
+    return directionName + "-" + String(portNumber);
+  }
 
   function renderFromModel() {
     errorTextElement.textContent = applicationModel.errorText;
-    portsGridElement.innerHTML = "";
+    diPortsElement.innerHTML = "";
+    doPortsElement.innerHTML = "";
 
-    const sortedPortNumbers = Object.keys(applicationModel.portsByNumber).map(Number).sort(function sortAscending(leftNumber, rightNumber) {
-      return leftNumber - rightNumber;
+    const sortedKeys = Object.keys(applicationModel.portsByKey).sort(function sortPortKeys(leftKey, rightKey) {
+      const leftPort = applicationModel.portsByKey[leftKey];
+      const rightPort = applicationModel.portsByKey[rightKey];
+      if (leftPort.direction === rightPort.direction) {
+        return leftPort.port - rightPort.port;
+      }
+      return leftPort.direction < rightPort.direction ? -1 : 1;
     });
 
-    sortedPortNumbers.forEach(function renderSinglePort(portNumber) {
-      const singlePortState = applicationModel.portsByNumber[portNumber];
+    sortedKeys.forEach(function renderSinglePort(portKey) {
+      const singlePortState = applicationModel.portsByKey[portKey];
+      const isEditingLabel = Boolean(applicationModel.editByKey[portKey]);
 
-      const cardElement = document.createElement("article");
-      cardElement.className = "card";
+      const lineElement = document.createElement("article");
+      lineElement.className = "port-line " + singlePortState.power;
 
-      const topRowElement = document.createElement("div");
-      topRowElement.className = "row";
+      const metaElement = document.createElement("div");
+      metaElement.className = "port-meta";
+      metaElement.textContent = singlePortState.direction + " " + singlePortState.port;
 
-      const titleElement = document.createElement("strong");
-      titleElement.textContent = "Port " + portNumber;
+      let labelElement;
+      if (isEditingLabel) {
+        labelElement = document.createElement("input");
+        labelElement.className = "label-input";
+        labelElement.value = singlePortState.label;
+        labelElement.id = "input-" + portKey;
+        labelElement.disabled = applicationModel.requestInFlight;
+      } else {
+        labelElement = document.createElement("div");
+        labelElement.className = "label-view";
+        labelElement.textContent = singlePortState.label;
+      }
 
-      const lampElement = document.createElement("span");
-      lampElement.className = "lamp " + singlePortState.power;
+      const actionsElement = document.createElement("div");
+      actionsElement.className = "compact-actions";
 
-      topRowElement.appendChild(titleElement);
-      topRowElement.appendChild(lampElement);
-
-      const buttonRowElement = document.createElement("div");
-      buttonRowElement.className = "button-row";
-
-      const onButtonElement = document.createElement("button");
-      onButtonElement.className = singlePortState.power === "on" ? "on-button active" : "on-button";
-      onButtonElement.textContent = "ON";
-      onButtonElement.disabled = applicationModel.requestInFlight;
-      onButtonElement.addEventListener("click", function onPowerOnClick() {
-        void sendPowerToServer(portNumber, "on");
+      const toggleButtonElement = document.createElement("button");
+      toggleButtonElement.className = "toggle-button " + singlePortState.power;
+      toggleButtonElement.textContent = singlePortState.power === "on" ? "ON" : "OFF";
+      toggleButtonElement.disabled = applicationModel.requestInFlight;
+      toggleButtonElement.addEventListener("click", function onToggleClick() {
+        const nextPower = singlePortState.power === "on" ? "off" : "on";
+        void sendPowerToServer(singlePortState.direction, singlePortState.port, nextPower);
       });
 
-      const offButtonElement = document.createElement("button");
-      offButtonElement.className = singlePortState.power === "off" ? "off-button active" : "off-button";
-      offButtonElement.textContent = "OFF";
-      offButtonElement.disabled = applicationModel.requestInFlight;
-      offButtonElement.addEventListener("click", function onPowerOffClick() {
-        void sendPowerToServer(portNumber, "off");
+      const editButtonElement = document.createElement("button");
+      editButtonElement.className = "edit-button";
+      editButtonElement.textContent = isEditingLabel ? "💾" : "✏️";
+      editButtonElement.disabled = applicationModel.requestInFlight;
+      editButtonElement.addEventListener("click", function onEditClick() {
+        if (!applicationModel.editByKey[portKey]) {
+          applicationModel.editByKey[portKey] = true;
+          renderFromModel();
+          return;
+        }
+
+        const inputElement = document.getElementById("input-" + portKey);
+        if (!inputElement) {
+          applicationModel.errorText = "Input not found for save";
+          renderFromModel();
+          return;
+        }
+        applicationModel.editByKey[portKey] = false;
+        void sendLabelToServer(singlePortState.direction, singlePortState.port, inputElement.value);
       });
 
-      buttonRowElement.appendChild(onButtonElement);
-      buttonRowElement.appendChild(offButtonElement);
+      actionsElement.appendChild(toggleButtonElement);
+      actionsElement.appendChild(editButtonElement);
 
-      const labelInputElement = document.createElement("input");
-      labelInputElement.value = singlePortState.label;
-      labelInputElement.placeholder = "Device label";
-      labelInputElement.disabled = applicationModel.requestInFlight;
+      lineElement.appendChild(metaElement);
+      lineElement.appendChild(labelElement);
+      lineElement.appendChild(actionsElement);
 
-      const saveButtonElement = document.createElement("button");
-      saveButtonElement.className = "save-button";
-      saveButtonElement.textContent = "Сохранить";
-      saveButtonElement.disabled = applicationModel.requestInFlight;
-      saveButtonElement.addEventListener("click", function onSaveClick() {
-        void sendLabelToServer(portNumber, labelInputElement.value);
-      });
-
-      cardElement.appendChild(topRowElement);
-      cardElement.appendChild(buttonRowElement);
-      cardElement.appendChild(labelInputElement);
-      cardElement.appendChild(saveButtonElement);
-
-      portsGridElement.appendChild(cardElement);
+      if (singlePortState.direction === "DI") {
+        diPortsElement.appendChild(lineElement);
+      } else {
+        doPortsElement.appendChild(lineElement);
+      }
     });
   }
 
   function applyStateFromServer(serverState) {
-    const nextPortsByNumber = {};
+    const nextPortsByKey = {};
     serverState.ports.forEach(function addPortToMap(singlePortState) {
-      nextPortsByNumber[singlePortState.port] = singlePortState;
+      nextPortsByKey[buildPortKey(singlePortState.direction, singlePortState.port)] = singlePortState;
     });
 
-    applicationModel.portsByNumber = nextPortsByNumber;
+    applicationModel.portsByKey = nextPortsByKey;
     applicationModel.errorText = "";
     renderFromModel();
   }
@@ -127,7 +159,7 @@
     return response.json();
   }
 
-  async function sendPowerToServer(portNumber, nextPower) {
+  async function sendPowerToServer(directionName, portNumber, nextPower) {
     applicationModel.requestInFlight = true;
     applicationModel.errorText = "";
     renderFromModel();
@@ -136,7 +168,7 @@
       const response = await fetch("/api/power", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port: portNumber, power: nextPower })
+        body: JSON.stringify({ direction: directionName, port: portNumber, power: nextPower })
       });
       if (!response.ok) {
         throw new Error(await response.text());
@@ -150,7 +182,7 @@
     }
   }
 
-  async function sendLabelToServer(portNumber, nextLabel) {
+  async function sendLabelToServer(directionName, portNumber, nextLabel) {
     applicationModel.requestInFlight = true;
     applicationModel.errorText = "";
     renderFromModel();
@@ -159,7 +191,7 @@
       const response = await fetch("/api/label", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port: portNumber, label: nextLabel })
+        body: JSON.stringify({ direction: directionName, port: portNumber, label: nextLabel })
       });
       if (!response.ok) {
         throw new Error(await response.text());

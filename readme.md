@@ -1,14 +1,14 @@
 # terskol-astro-guide
 
-Desktop-приложение на WebView для управления 10 DIO/DO портами.
+Desktop-приложение на WebView для управления DIO/DO портами.
 
 ## Что есть
-- 10 портов (1..10).
+- 20 портов: 10 входящих `DI` и 10 исходящих `DO`.
 - Для каждого порта:
-  - ON / OFF
-  - цветовая индикация: зеленый = включен, серый = выключен
-  - поле подписи устройства + кнопка «Сохранить»
-- Подписи сохраняются в `dio-labels.json`.
+  - компактная строка с одной toggle-кнопкой ON/OFF (жирная надпись состояния)
+  - подсветка всей строки: зеленый = включено, красный = выключено
+  - редактирование названия через кнопку-карандаш `✏️` и сохранение через `💾`
+- Состояние и названия сохраняются в SQLite (`dio-state.sqlite` по умолчанию).
 
 ## Запуск
 
@@ -20,9 +20,9 @@ go run terskol-astro-guide.go
 - `-port` HTTP порт (по умолчанию `8765`)
 - `-directory` локальная директория для статики
 - `-dio-value-path-template` путь-шаблон для файла DIO (по умолчанию `/sys/class/gpio/gpio%d/value`)
-- `-labels-file` файл подписей (по умолчанию `dio-labels.json`)
+- `-db-file` файл SQLite БД (по умолчанию `dio-state.sqlite`)
 
 ## API
 - `GET /api/state`
-- `POST /api/power` body: `{ "port": 1, "power": "on" }`
-- `POST /api/label` body: `{ "port": 1, "label": "Pump" }`
+- `POST /api/power` body: `{ "direction": "DO", "port": 1, "power": "on" }`
+- `POST /api/label` body: `{ "direction": "DI", "port": 1, "label": "Door sensor" }`

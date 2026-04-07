@@ -9,12 +9,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
-)
 
-import "github.com/webview/webview"
+	"github.com/webview/webview"
+)
 
 // =============================
 // Embedded static assets.
@@ -27,19 +29,20 @@ var (
 	portFlag                 = flag.Int("port", 8765, "web server port")
 	directoryFlag            = flag.String("directory", ".", "directory to serve files from")
 	dioValuePathTemplateFlag = flag.String("dio-value-path-template", "/sys/class/gpio/gpio%d/value", "DIO value file path template")
-	labelsFileFlag           = flag.String("labels-file", "dio-labels.json", "path to labels file")
+	databaseFileFlag         = flag.String("db-file", "dio-state.sqlite", "path to sqlite database file")
 )
 
-const portCount = 10
+const portsPerDirection = 10
 
 // =============================
 // Domain model.
 // =============================
 
 type portState struct {
-	Port  int    `json:"port"`
-	Power string `json:"power"`
-	Label string `json:"label"`
+	Port      int    `json:"port"`
+	Direction string `json:"direction"`
+	Power     string `json:"power"`
+	Label     string `json:"label"`
 }
 
 type appState struct {
@@ -47,21 +50,24 @@ type appState struct {
 }
 
 type setPowerRequest struct {
-	Port  int    `json:"port"`
-	Power string `json:"power"`
+	Port      int    `json:"port"`
+	Direction string `json:"direction"`
+	Power     string `json:"power"`
 }
 
 type setLabelRequest struct {
-	Port  int    `json:"port"`
-	Label string `json:"label"`
+	Port      int    `json:"port"`
+	Direction string `json:"direction"`
+	Label     string `json:"label"`
 }
 
 type stateCommand struct {
-	kind  string
-	port  int
-	power string
-	label string
-	reply chan stateReply
+	kind      string
+	port      int
+	direction string
+	power     string
+	label     string
+	reply     chan stateReply
 }
 
 type stateReply struct {
@@ -76,8 +82,12 @@ type stateReply struct {
 func main() {
 	flag.Parse()
 
+	if err := prepareDatabase(*databaseFileFlag); err != nil {
+		log.Fatalf("startup: database init failed: %v", err)
+	}
+
 	stateCommands := make(chan stateCommand)
-	go runStateOwner(stateCommands, *dioValuePathTemplateFlag, *labelsFileFlag)
+	go runStateOwner(stateCommands, *databaseFileFlag, *dioValuePathTemplateFlag)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
 	http.HandleFunc("/api/power", handleSetPower(stateCommands))
@@ -108,8 +118,12 @@ func main() {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, dioValuePathTemplate string, labelsFile string) {
-	state := buildInitialState(loadLabels(labelsFile))
+func runStateOwner(stateCommands <-chan stateCommand, databaseFile string, dioValuePathTemplate string) {
+	state, err := loadStateFromDatabase(databaseFile)
+	if err != nil {
+		log.Printf("state: database read failed, fallback to defaults: %v", err)
+		state = buildDefaultState()
+	}
 	log.Printf("state: owner started with %d ports", len(state.Ports))
 
 	for command := range stateCommands {
@@ -117,20 +131,26 @@ func runStateOwner(stateCommands <-chan stateCommand, dioValuePathTemplate strin
 		case "get":
 			command.reply <- stateReply{state: cloneState(state)}
 		case "set_power":
-			resultState, err := applyPower(state, command.port, command.power, dioValuePathTemplate)
+			resultState, err := applyPower(state, command.port, command.direction, command.power, dioValuePathTemplate)
 			if err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			singlePortState, found := findPort(resultState, command.port, command.direction)
+			if err := savePortToDatabase(databaseFile, singlePortState, found); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
 			state = resultState
 			command.reply <- stateReply{state: cloneState(state)}
 		case "set_label":
-			resultState, err := applyLabel(state, command.port, command.label)
+			resultState, err := applyLabel(state, command.port, command.direction, command.label)
 			if err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
-			if err := saveLabels(labelsFile, resultState); err != nil {
+			singlePortState, found := findPort(resultState, command.port, command.direction)
+			if err := savePortToDatabase(databaseFile, singlePortState, found); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
@@ -142,49 +162,182 @@ func runStateOwner(stateCommands <-chan stateCommand, dioValuePathTemplate strin
 	}
 }
 
-func buildInitialState(savedLabels map[int]string) appState {
-	ports := make([]portState, 0, portCount)
-	for portIndex := 1; portIndex <= portCount; portIndex++ {
-		label := savedLabels[portIndex]
-		if label == "" {
-			label = fmt.Sprintf("DIO %d", portIndex)
+// =============================
+// Database subsystem.
+// =============================
+
+func prepareDatabase(databaseFile string) error {
+	if err := runSQLite(databaseFile, `
+		CREATE TABLE IF NOT EXISTS ports (
+			port INTEGER NOT NULL,
+			direction TEXT NOT NULL,
+			power TEXT NOT NULL,
+			label TEXT NOT NULL,
+			PRIMARY KEY (port, direction)
+		);
+	`); err != nil {
+		return err
+	}
+
+	for _, direction := range []string{"DI", "DO"} {
+		for portNumber := 1; portNumber <= portsPerDirection; portNumber++ {
+			defaultLabel := fmt.Sprintf("%s %d", direction, portNumber)
+			insertSQL := fmt.Sprintf("INSERT OR IGNORE INTO ports(port, direction, power, label) VALUES (%d, %s, 'off', %s);", portNumber, sqlString(direction), sqlString(defaultLabel))
+			if err := runSQLite(databaseFile, insertSQL); err != nil {
+				return err
+			}
 		}
-		ports = append(ports, portState{Port: portIndex, Power: "off", Label: label})
+	}
+	return nil
+}
+
+func loadStateFromDatabase(databaseFile string) (appState, error) {
+	rawRows, err := runSQLiteQuery(databaseFile, "SELECT port, direction, power, label FROM ports ORDER BY direction, port;")
+	if err != nil {
+		return appState{}, err
+	}
+
+	ports := make([]portState, 0, portsPerDirection*2)
+	for _, row := range rawRows {
+		columns := strings.Split(row, "|")
+		if len(columns) != 4 {
+			continue
+		}
+
+		portNumber, parseErr := strconv.Atoi(columns[0])
+		if parseErr != nil {
+			return appState{}, parseErr
+		}
+		ports = append(ports, portState{Port: portNumber, Direction: columns[1], Power: columns[2], Label: columns[3]})
+	}
+
+	return appState{Ports: ports}, nil
+}
+
+func savePortToDatabase(databaseFile string, singlePortState portState, found bool) error {
+	if !found {
+		return errors.New("port not found")
+	}
+
+	updateSQL := fmt.Sprintf(
+		"UPDATE ports SET power = %s, label = %s WHERE port = %d AND direction = %s;",
+		sqlString(singlePortState.Power),
+		sqlString(singlePortState.Label),
+		singlePortState.Port,
+		sqlString(singlePortState.Direction),
+	)
+	return runSQLite(databaseFile, updateSQL)
+}
+
+func runSQLite(databaseFile string, statement string) error {
+	command := exec.Command("sqlite3", databaseFile, statement)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("sqlite execution failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func runSQLiteQuery(databaseFile string, query string) ([]string, error) {
+	command := exec.Command("sqlite3", "-separator", "|", databaseFile, query)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("sqlite query failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	trimmedOutput := strings.TrimSpace(string(output))
+	if trimmedOutput == "" {
+		return []string{}, nil
+	}
+	return strings.Split(trimmedOutput, "\n"), nil
+}
+
+func sqlString(source string) string {
+	return "'" + strings.ReplaceAll(source, "'", "''") + "'"
+}
+
+// =============================
+// State transition subsystem.
+// =============================
+
+func buildDefaultState() appState {
+	ports := make([]portState, 0, portsPerDirection*2)
+	for _, direction := range []string{"DI", "DO"} {
+		for portNumber := 1; portNumber <= portsPerDirection; portNumber++ {
+			ports = append(ports, portState{
+				Port:      portNumber,
+				Direction: direction,
+				Power:     "off",
+				Label:     fmt.Sprintf("%s %d", direction, portNumber),
+			})
+		}
 	}
 	return appState{Ports: ports}
 }
 
-func applyPower(state appState, port int, nextPower string, dioValuePathTemplate string) (appState, error) {
-	if port < 1 || port > portCount {
+func applyPower(state appState, port int, direction string, nextPower string, dioValuePathTemplate string) (appState, error) {
+	if port < 1 || port > portsPerDirection {
 		return state, errors.New("invalid port")
+	}
+	if direction != "DI" && direction != "DO" {
+		return state, errors.New("direction must be DI or DO")
 	}
 	if nextPower != "on" && nextPower != "off" {
 		return state, errors.New("power must be on or off")
 	}
 
-	if err := writeDIOPower(port, nextPower, dioValuePathTemplate); err != nil {
+	if err := writeDIOPower(port, direction, nextPower, dioValuePathTemplate); err != nil {
 		return state, err
 	}
 
 	nextState := cloneState(state)
-	nextState.Ports[port-1].Power = nextPower
-	log.Printf("dio: port=%d power=%s", port, nextPower)
+	index, found := findPortIndex(nextState, port, direction)
+	if !found {
+		return state, errors.New("port not found")
+	}
+	nextState.Ports[index].Power = nextPower
+	log.Printf("dio: direction=%s port=%d power=%s", direction, port, nextPower)
 	return nextState, nil
 }
 
-func applyLabel(state appState, port int, nextLabel string) (appState, error) {
-	if port < 1 || port > portCount {
+func applyLabel(state appState, port int, direction string, nextLabel string) (appState, error) {
+	if port < 1 || port > portsPerDirection {
 		return state, errors.New("invalid port")
 	}
+	if direction != "DI" && direction != "DO" {
+		return state, errors.New("direction must be DI or DO")
+	}
+
 	sanitizedLabel := strings.TrimSpace(nextLabel)
 	if sanitizedLabel == "" {
 		return state, errors.New("label is required")
 	}
 
 	nextState := cloneState(state)
-	nextState.Ports[port-1].Label = sanitizedLabel
-	log.Printf("dio: port=%d label=%s", port, sanitizedLabel)
+	index, found := findPortIndex(nextState, port, direction)
+	if !found {
+		return state, errors.New("port not found")
+	}
+	nextState.Ports[index].Label = sanitizedLabel
+	log.Printf("dio: direction=%s port=%d label=%s", direction, port, sanitizedLabel)
 	return nextState, nil
+}
+
+func findPort(state appState, port int, direction string) (portState, bool) {
+	index, found := findPortIndex(state, port, direction)
+	if !found {
+		return portState{}, false
+	}
+	return state.Ports[index], true
+}
+
+func findPortIndex(state appState, port int, direction string) (int, bool) {
+	for index, singlePortState := range state.Ports {
+		if singlePortState.Port == port && singlePortState.Direction == direction {
+			return index, true
+		}
+	}
+	return -1, false
 }
 
 func cloneState(source appState) appState {
@@ -193,7 +346,11 @@ func cloneState(source appState) appState {
 	return appState{Ports: copiedPorts}
 }
 
-func writeDIOPower(port int, nextPower string, dioValuePathTemplate string) error {
+func writeDIOPower(port int, direction string, nextPower string, dioValuePathTemplate string) error {
+	if direction == "DI" {
+		log.Printf("dio: DI port=%d is virtual state only", port)
+		return nil
+	}
 	if runtime.GOOS != "linux" {
 		log.Printf("dio: non-linux runtime, skip physical write for port=%d", port)
 		return nil
@@ -205,31 +362,6 @@ func writeDIOPower(port int, nextPower string, dioValuePathTemplate string) erro
 	}
 	path := fmt.Sprintf(dioValuePathTemplate, port)
 	return os.WriteFile(path, []byte(nextValue), 0o644)
-}
-
-func loadLabels(labelsFile string) map[int]string {
-	fileData, err := os.ReadFile(labelsFile)
-	if err != nil {
-		return map[int]string{}
-	}
-
-	var labels map[int]string
-	if err := json.Unmarshal(fileData, &labels); err != nil {
-		return map[int]string{}
-	}
-	return labels
-}
-
-func saveLabels(labelsFile string, state appState) error {
-	labels := map[int]string{}
-	for _, singlePortState := range state.Ports {
-		labels[singlePortState.Port] = singlePortState.Label
-	}
-	fileData, err := json.MarshalIndent(labels, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(labelsFile, fileData, 0o644)
 }
 
 // =============================
@@ -265,7 +397,7 @@ func handleSetPower(stateCommands chan<- stateCommand) http.HandlerFunc {
 		}
 
 		reply := make(chan stateReply, 1)
-		stateCommands <- stateCommand{kind: "set_power", port: apiRequest.Port, power: apiRequest.Power, reply: reply}
+		stateCommands <- stateCommand{kind: "set_power", port: apiRequest.Port, direction: strings.ToUpper(apiRequest.Direction), power: apiRequest.Power, reply: reply}
 		result := <-reply
 		if result.err != nil {
 			http.Error(writer, result.err.Error(), http.StatusBadRequest)
@@ -290,7 +422,7 @@ func handleSetLabel(stateCommands chan<- stateCommand) http.HandlerFunc {
 		}
 
 		reply := make(chan stateReply, 1)
-		stateCommands <- stateCommand{kind: "set_label", port: apiRequest.Port, label: apiRequest.Label, reply: reply}
+		stateCommands <- stateCommand{kind: "set_label", port: apiRequest.Port, direction: strings.ToUpper(apiRequest.Direction), label: apiRequest.Label, reply: reply}
 		result := <-reply
 		if result.err != nil {
 			http.Error(writer, result.err.Error(), http.StatusBadRequest)
