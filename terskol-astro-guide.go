@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -9,11 +10,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
+
+	_ "terskol-astro-guide/pkg/sqlitecli"
 
 	"github.com/webview/webview"
 )
@@ -82,12 +83,18 @@ type stateReply struct {
 func main() {
 	flag.Parse()
 
-	if err := prepareDatabase(*databaseFileFlag); err != nil {
+	database, err := sql.Open("sqlitecli", *databaseFileFlag)
+	if err != nil {
+		log.Fatalf("startup: database open failed: %v", err)
+	}
+	defer database.Close()
+
+	if err := prepareDatabase(database); err != nil {
 		log.Fatalf("startup: database init failed: %v", err)
 	}
 
 	stateCommands := make(chan stateCommand)
-	go runStateOwner(stateCommands, *databaseFileFlag, *dioValuePathTemplateFlag)
+	go runStateOwner(stateCommands, database, *dioValuePathTemplateFlag)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
 	http.HandleFunc("/api/power", handleSetPower(stateCommands))
@@ -97,8 +104,7 @@ func main() {
 	address := fmt.Sprintf(":%d", *portFlag)
 	log.Printf("startup: starting HTTP server on http://localhost%s", address)
 	go func() {
-		err := http.ListenAndServe(address, nil)
-		if err != nil {
+		if err := http.ListenAndServe(address, nil); err != nil {
 			log.Printf("shutdown: HTTP server stopped: %v", err)
 		}
 	}()
@@ -118,8 +124,8 @@ func main() {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, databaseFile string, dioValuePathTemplate string) {
-	state, err := loadStateFromDatabase(databaseFile)
+func runStateOwner(stateCommands <-chan stateCommand, database *sql.DB, dioValuePathTemplate string) {
+	state, err := loadStateFromDatabase(database)
 	if err != nil {
 		log.Printf("state: database read failed, fallback to defaults: %v", err)
 		state = buildDefaultState()
@@ -137,7 +143,7 @@ func runStateOwner(stateCommands <-chan stateCommand, databaseFile string, dioVa
 				continue
 			}
 			singlePortState, found := findPort(resultState, command.port, command.direction)
-			if err := savePortToDatabase(databaseFile, singlePortState, found); err != nil {
+			if err := savePortToDatabase(database, singlePortState, found); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
@@ -150,7 +156,7 @@ func runStateOwner(stateCommands <-chan stateCommand, databaseFile string, dioVa
 				continue
 			}
 			singlePortState, found := findPort(resultState, command.port, command.direction)
-			if err := savePortToDatabase(databaseFile, singlePortState, found); err != nil {
+			if err := savePortToDatabase(database, singlePortState, found); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
@@ -166,15 +172,15 @@ func runStateOwner(stateCommands <-chan stateCommand, databaseFile string, dioVa
 // Database subsystem.
 // =============================
 
-func prepareDatabase(databaseFile string) error {
-	if err := runSQLite(databaseFile, `
+func prepareDatabase(database *sql.DB) error {
+	if _, err := database.Exec(`
 		CREATE TABLE IF NOT EXISTS ports (
 			port INTEGER NOT NULL,
 			direction TEXT NOT NULL,
 			power TEXT NOT NULL,
 			label TEXT NOT NULL,
 			PRIMARY KEY (port, direction)
-		);
+		)
 	`); err != nil {
 		return err
 	}
@@ -182,8 +188,7 @@ func prepareDatabase(databaseFile string) error {
 	for _, direction := range []string{"DI", "DO"} {
 		for portNumber := 1; portNumber <= portsPerDirection; portNumber++ {
 			defaultLabel := fmt.Sprintf("%s %d", direction, portNumber)
-			insertSQL := fmt.Sprintf("INSERT OR IGNORE INTO ports(port, direction, power, label) VALUES (%d, %s, 'off', %s);", portNumber, sqlString(direction), sqlString(defaultLabel))
-			if err := runSQLite(databaseFile, insertSQL); err != nil {
+			if _, err := database.Exec(`INSERT OR IGNORE INTO ports(port, direction, power, label) VALUES (?, ?, 'off', ?)`, portNumber, direction, defaultLabel); err != nil {
 				return err
 			}
 		}
@@ -191,69 +196,34 @@ func prepareDatabase(databaseFile string) error {
 	return nil
 }
 
-func loadStateFromDatabase(databaseFile string) (appState, error) {
-	rawRows, err := runSQLiteQuery(databaseFile, "SELECT port, direction, power, label FROM ports ORDER BY direction, port;")
+func loadStateFromDatabase(database *sql.DB) (appState, error) {
+	rows, err := database.Query(`SELECT port, direction, power, label FROM ports ORDER BY direction, port`)
 	if err != nil {
 		return appState{}, err
 	}
+	defer rows.Close()
 
 	ports := make([]portState, 0, portsPerDirection*2)
-	for _, row := range rawRows {
-		columns := strings.Split(row, "|")
-		if len(columns) != 4 {
-			continue
+	for rows.Next() {
+		var singlePortState portState
+		if err := rows.Scan(&singlePortState.Port, &singlePortState.Direction, &singlePortState.Power, &singlePortState.Label); err != nil {
+			return appState{}, err
 		}
-
-		portNumber, parseErr := strconv.Atoi(columns[0])
-		if parseErr != nil {
-			return appState{}, parseErr
-		}
-		ports = append(ports, portState{Port: portNumber, Direction: columns[1], Power: columns[2], Label: columns[3]})
+		ports = append(ports, singlePortState)
+	}
+	if err := rows.Err(); err != nil {
+		return appState{}, err
 	}
 
 	return appState{Ports: ports}, nil
 }
 
-func savePortToDatabase(databaseFile string, singlePortState portState, found bool) error {
+func savePortToDatabase(database *sql.DB, singlePortState portState, found bool) error {
 	if !found {
 		return errors.New("port not found")
 	}
-
-	updateSQL := fmt.Sprintf(
-		"UPDATE ports SET power = %s, label = %s WHERE port = %d AND direction = %s;",
-		sqlString(singlePortState.Power),
-		sqlString(singlePortState.Label),
-		singlePortState.Port,
-		sqlString(singlePortState.Direction),
-	)
-	return runSQLite(databaseFile, updateSQL)
-}
-
-func runSQLite(databaseFile string, statement string) error {
-	command := exec.Command("sqlite3", databaseFile, statement)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("sqlite execution failed: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-func runSQLiteQuery(databaseFile string, query string) ([]string, error) {
-	command := exec.Command("sqlite3", "-separator", "|", databaseFile, query)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("sqlite query failed: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-
-	trimmedOutput := strings.TrimSpace(string(output))
-	if trimmedOutput == "" {
-		return []string{}, nil
-	}
-	return strings.Split(trimmedOutput, "\n"), nil
-}
-
-func sqlString(source string) string {
-	return "'" + strings.ReplaceAll(source, "'", "''") + "'"
+	_, err := database.Exec(`UPDATE ports SET power = ?, label = ? WHERE port = ? AND direction = ?`, singlePortState.Power, singlePortState.Label, singlePortState.Port, singlePortState.Direction)
+	return err
 }
 
 // =============================
@@ -264,12 +234,7 @@ func buildDefaultState() appState {
 	ports := make([]portState, 0, portsPerDirection*2)
 	for _, direction := range []string{"DI", "DO"} {
 		for portNumber := 1; portNumber <= portsPerDirection; portNumber++ {
-			ports = append(ports, portState{
-				Port:      portNumber,
-				Direction: direction,
-				Power:     "off",
-				Label:     fmt.Sprintf("%s %d", direction, portNumber),
-			})
+			ports = append(ports, portState{Port: portNumber, Direction: direction, Power: "off", Label: fmt.Sprintf("%s %d", direction, portNumber)})
 		}
 	}
 	return appState{Ports: ports}
