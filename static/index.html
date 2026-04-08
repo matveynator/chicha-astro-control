@@ -373,6 +373,10 @@
   }
 
   function applyStateFromServer(serverState) {
+    if (hasActiveLabelEditing()) {
+      return;
+    }
+
     const nextInputsByChannel = {};
     serverState.inputs.forEach(function registerInput(inputState) {
       nextInputsByChannel[inputState.channel] = inputState;
@@ -482,11 +486,21 @@
 
   function startSignalRefreshLoop() {
     setInterval(function pollState() {
+      if (hasActiveLabelEditing()) {
+        return;
+      }
+
       requestStateFromServer().then(applyStateFromServer).catch(function handleRefreshError(refreshError) {
         applicationModel.errorText = String(refreshError);
         renderFromModel();
       });
     }, 600);
+  }
+
+  function hasActiveLabelEditing() {
+    const hasInputEditing = Object.keys(applicationModel.editingInputLabelsByChannel).length > 0;
+    const hasOutputEditing = Object.keys(applicationModel.editingOutputLabelsByChannel).length > 0;
+    return hasInputEditing || hasOutputEditing;
   }
 
   requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {
