@@ -1,4 +1,4 @@
-module terskol-astro-guide
+module astro-control
 
 go 1.22
 
