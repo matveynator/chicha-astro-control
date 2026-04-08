@@ -122,3 +122,33 @@ func TestBuildInitialStateNormalizesLegacyPortLabelsToRealPins(t *testing.T) {
 		t.Fatalf("expected DO18 for output channel 8, got %q", state.Outputs[7].Label)
 	}
 }
+
+func TestApplyOutputPWMDoesNotTogglePowerState(t *testing.T) {
+	offState := appState{
+		Outputs: []outputState{{Channel: 1, Power: "off", PWM: 0, Label: "DO11"}},
+	}
+	offUpdatedState, offErr := applyOutputPWM(offState, 1, 35)
+	if offErr != nil {
+		t.Fatalf("expected no error for off state pwm update, got %v", offErr)
+	}
+	if offUpdatedState.Outputs[0].Power != "off" {
+		t.Fatalf("expected off state power to stay off, got %q", offUpdatedState.Outputs[0].Power)
+	}
+	if offUpdatedState.Outputs[0].PWM != 35 {
+		t.Fatalf("expected off state pwm 35, got %d", offUpdatedState.Outputs[0].PWM)
+	}
+
+	onState := appState{
+		Outputs: []outputState{{Channel: 1, Power: "on", PWM: 20, Label: "DO11"}},
+	}
+	onUpdatedState, onErr := applyOutputPWM(onState, 1, 55)
+	if onErr != nil {
+		t.Fatalf("expected no error for on state pwm update, got %v", onErr)
+	}
+	if onUpdatedState.Outputs[0].Power != "on" {
+		t.Fatalf("expected on state power to stay on, got %q", onUpdatedState.Outputs[0].Power)
+	}
+	if onUpdatedState.Outputs[0].PWM != 55 {
+		t.Fatalf("expected on state pwm 55, got %d", onUpdatedState.Outputs[0].PWM)
+	}
+}

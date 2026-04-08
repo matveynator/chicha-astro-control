@@ -363,14 +363,8 @@ func applyOutputPWM(state appState, channel int, nextPWM int) (appState, error) 
 		return state, errors.New("pwm must be between 0 and 100")
 	}
 
-	nextPower := "off"
-	if nextPWM > 0 {
-		nextPower = "on"
-	}
-
 	nextState := cloneState(state)
 	nextState.Outputs[channel-1].PWM = nextPWM
-	nextState.Outputs[channel-1].Power = nextPower
 	return nextState, nil
 }
 
