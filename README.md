@@ -1,9 +1,9 @@
 # terskol-astro-guide
 
-Desktop-приложение на WebView для управления 10 DIO - DI INPUT / DO OUTPUT портами.
+Desktop-приложение на WebView для управления DIO на Vecow ECX-1000-2G.
 
 ## Что есть
-- 10 портов (1..10).
+- 8 управляемых DO-портов (DO0..DO7, физические пины 11..18 20-пинового разъема).
 - Для каждого порта:
   - ON / OFF
   - цветовая индикация: зеленый = включен, серый = выключен
@@ -19,7 +19,9 @@ go run terskol-astro-guide.go
 ## Флаги
 - `-port` HTTP порт (по умолчанию `8765`)
 - `-directory` локальная директория для статики
-- `-dio-value-path-template` путь-шаблон для файла DIO (по умолчанию `/sys/class/gpio/gpio%d/value`)
+- `-dio-value-path-template` явный путь-шаблон для DIO с `%d` (имеет максимальный приоритет)
+- `-dio-linux-value-path-template` путь-шаблон DIO для Linux (по умолчанию `/sys/class/gpio/gpio%d/value`)
+- `-dio-windows-value-path-template` путь-шаблон DIO для Windows (по умолчанию `C:\Vecow\ECX1K\dio%d.value`)
 - `-labels-file` файл подписей (по умолчанию `dio-labels.json`)
 
 ## API

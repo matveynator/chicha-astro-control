@@ -29,13 +29,15 @@ import (
 var staticFiles embed.FS
 
 var (
-	portFlag                 = flag.Int("port", 8765, "web server port")
-	directoryFlag            = flag.String("directory", ".", "directory to serve files from")
-	dioValuePathTemplateFlag = flag.String("dio-value-path-template", "/sys/class/gpio/gpio%d/value", "DIO value file path template")
-	labelsFileFlag           = flag.String("labels-file", "dio-labels.json", "path to labels file")
+	portFlag                      = flag.Int("port", 8765, "web server port")
+	directoryFlag                 = flag.String("directory", ".", "directory to serve files from")
+	dioValuePathTemplateFlag      = flag.String("dio-value-path-template", "", "explicit DIO value file path template with %d placeholder")
+	dioLinuxValuePathTemplateFlag = flag.String("dio-linux-value-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO value file path template")
+	dioWindowsValuePathTemplate   = flag.String("dio-windows-value-path-template", `C:\Vecow\ECX1K\dio%d.value`, "Windows DIO value file path template")
+	labelsFileFlag                = flag.String("labels-file", "dio-labels.json", "path to labels file")
 )
 
-const portCount = 10
+const portCount = 8
 const serverStartupTimeout = 45 * time.Second
 
 // =============================
@@ -82,8 +84,14 @@ type stateReply struct {
 func main() {
 	flag.Parse()
 
+	dioValuePathTemplate := resolveDIOValuePathTemplate(
+		*dioValuePathTemplateFlag,
+		*dioLinuxValuePathTemplateFlag,
+		*dioWindowsValuePathTemplate,
+	)
+
 	stateCommands := make(chan stateCommand)
-	go runStateOwner(stateCommands, *dioValuePathTemplateFlag, *labelsFileFlag)
+	go runStateOwner(stateCommands, dioValuePathTemplate, *labelsFileFlag)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
 	http.HandleFunc("/api/power", handleSetPower(stateCommands))
@@ -120,6 +128,22 @@ func main() {
 	log.Printf("webview: window started")
 	window.Run()
 	log.Printf("shutdown: webview stopped")
+}
+
+func resolveDIOValuePathTemplate(explicitTemplate string, linuxTemplate string, windowsTemplate string) string {
+	trimmedExplicitTemplate := strings.TrimSpace(explicitTemplate)
+	if trimmedExplicitTemplate != "" {
+		log.Printf("dio: using explicit template=%s", trimmedExplicitTemplate)
+		return trimmedExplicitTemplate
+	}
+
+	if runtime.GOOS == "windows" {
+		log.Printf("dio: detected windows runtime, template=%s", windowsTemplate)
+		return windowsTemplate
+	}
+
+	log.Printf("dio: detected %s runtime, template=%s", runtime.GOOS, linuxTemplate)
+	return linuxTemplate
 }
 
 func waitForServerReadiness(address string, timeout time.Duration) {
@@ -244,18 +268,17 @@ func cloneState(source appState) appState {
 }
 
 func writeDIOPower(port int, nextPower string, dioValuePathTemplate string) error {
-	if runtime.GOOS != "linux" {
-		log.Printf("dio: non-linux runtime, skip physical write for port=%d", port)
-		return nil
-	}
-
 	nextValue := "0"
 	if nextPower == "on" {
 		nextValue = "1"
 	}
 
 	gpioPath := fmt.Sprintf(dioValuePathTemplate, port)
-	return os.WriteFile(gpioPath, []byte(nextValue), 0o644)
+	if err := os.WriteFile(gpioPath, []byte(nextValue), 0o644); err != nil {
+		return fmt.Errorf("write DIO path %q: %w", gpioPath, err)
+	}
+
+	return nil
 }
 
 func loadLabels(labelsFile string) map[int]string {
