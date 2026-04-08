@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -30,25 +31,20 @@ import (
 var staticFiles embed.FS
 
 var (
-	portFlag                   = flag.Int("port", 8765, "web server port")
-	directoryFlag              = flag.String("directory", ".", "directory to serve files from")
-	dioOutputPathTemplateFlag  = flag.String("dio-output-path-template", "", "explicit DIO output file path template with %d placeholder")
-	dioInputPathTemplateFlag   = flag.String("dio-input-path-template", "", "explicit DIO input file path template with %d placeholder")
-	dioLinuxOutputPathTemplate = flag.String("dio-linux-output-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO output file path template")
-	dioLinuxInputPathTemplate  = flag.String("dio-linux-input-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO input file path template")
-	dioWindowsOutputPathFlag   = flag.String("dio-windows-output-path-template", `C:\Vecow\ECX1K\do%d.value`, "Windows DIO output file path template")
-	dioWindowsInputPathFlag    = flag.String("dio-windows-input-path-template", `C:\Vecow\ECX1K\di%d.value`, "Windows DIO input file path template")
-	settingsFileFlag           = flag.String("settings-file", "", "path to settings json file")
-	inputOnVoltageFlag         = flag.Float64("input-on-voltage", 24.0, "voltage value used when DI source is digital and signal is active")
-	inputOffVoltageFlag        = flag.Float64("input-off-voltage", 0.0, "voltage value used when DI source is digital and signal is inactive")
-	inputThresholdVoltageFlag  = flag.Float64("input-threshold-voltage", 2.0, "threshold used to map numeric DI voltage to on/off signal")
-	pwmFrequencyFlag           = flag.Float64("pwm-frequency-hz", 100.0, "software PWM frequency for outputs")
+	inputPathTemplateFlag  = flag.String("DI", "", "DI path template with %d placeholder")
+	outputPathTemplateFlag = flag.String("DO", "", "DO path template with %d placeholder")
+	settingsFileFlag       = flag.String("config", "", "path to settings json file")
 )
 
 const (
 	inputCount           = 8
 	outputCount          = 8
 	serverStartupTimeout = 45 * time.Second
+	defaultStartPort     = 7654
+	defaultInputOnV      = 24.0
+	defaultInputOffV     = 0.0
+	defaultInputThreshV  = 2.0
+	defaultPWMFrequency  = 100.0
 )
 
 // =============================
@@ -151,12 +147,12 @@ func main() {
 	flag.Parse()
 
 	resolvedIOPaths := ioPaths{
-		inputTemplate:  resolvePathTemplate(*dioInputPathTemplateFlag, *dioLinuxInputPathTemplate, *dioWindowsInputPathFlag),
-		outputTemplate: resolvePathTemplate(*dioOutputPathTemplateFlag, *dioLinuxOutputPathTemplate, *dioWindowsOutputPathFlag),
+		inputTemplate:  resolveIOPathTemplate(*inputPathTemplateFlag, defaultDIPathTemplate()),
+		outputTemplate: resolveIOPathTemplate(*outputPathTemplateFlag, defaultDOPathTemplate()),
 	}
 
 	stateCommands := make(chan stateCommand)
-	outputPWMController := startPWMController(resolvedIOPaths.outputTemplate, *pwmFrequencyFlag)
+	outputPWMController := startPWMController(resolvedIOPaths.outputTemplate, defaultPWMFrequency)
 	settingsFile, err := resolveSettingsFilePath(*settingsFileFlag)
 	if err != nil {
 		log.Fatalf("startup: settings path resolve failed: %v", err)
@@ -165,9 +161,9 @@ func main() {
 		stateCommands,
 		resolvedIOPaths,
 		runtimeConfig{
-			inputOnVoltage:        *inputOnVoltageFlag,
-			inputOffVoltage:       *inputOffVoltageFlag,
-			inputThresholdVoltage: *inputThresholdVoltageFlag,
+			inputOnVoltage:        defaultInputOnV,
+			inputOffVoltage:       defaultInputOffV,
+			inputThresholdVoltage: defaultInputThreshV,
 		},
 		settingsFile,
 		outputPWMController,
@@ -177,15 +173,11 @@ func main() {
 	http.HandleFunc("/api/output/power", handleSetOutputPower(stateCommands))
 	http.HandleFunc("/api/output/pwm", handleSetOutputPWM(stateCommands))
 	http.HandleFunc("/api/label", handleSetLabel(stateCommands))
+	http.HandleFunc("/api/open/repository", handleOpenRepository)
 	http.HandleFunc("/", handleRequest)
 
-	address := fmt.Sprintf("127.0.0.1:%d", *portFlag)
+	httpListener, address := listenOnFirstAvailablePort(defaultStartPort)
 	log.Printf("startup: starting HTTP server on http://%s", address)
-
-	httpListener, err := net.Listen("tcp", address)
-	if err != nil {
-		log.Fatalf("startup: listen failed: %v", err)
-	}
 
 	go func() {
 		err := http.Serve(httpListener, nil)
@@ -202,7 +194,7 @@ func main() {
 	}
 	defer window.Destroy()
 
-	window.SetTitle("chicha-astro-control")
+	window.SetTitle("astro-control")
 	window.SetSize(1120, 760, webview.HintNone)
 	window.Navigate("http://" + address)
 
@@ -211,18 +203,49 @@ func main() {
 	log.Printf("shutdown: webview stopped")
 }
 
-func resolvePathTemplate(explicitTemplate string, linuxTemplate string, windowsTemplate string) string {
+func resolveIOPathTemplate(explicitTemplate string, fallbackTemplate string) string {
 	trimmedExplicitTemplate := strings.TrimSpace(explicitTemplate)
-	if trimmedExplicitTemplate != "" {
-		log.Printf("dio: using explicit template=%s", trimmedExplicitTemplate)
-		return trimmedExplicitTemplate
+	if trimmedExplicitTemplate == "" {
+		return fallbackTemplate
 	}
 
-	if runtime.GOOS == "windows" {
-		return windowsTemplate
+	log.Printf("dio: using template=%s", trimmedExplicitTemplate)
+	return trimmedExplicitTemplate
+}
+
+func defaultDIPathTemplate() string {
+	switch runtime.GOOS {
+	case "windows":
+		return `C:\Vecow\ECX1K\di%d.value`
+	case "darwin":
+		return "/tmp/astro-control/di%d.value"
+	default:
+		return "/sys/class/gpio/gpio%d/value"
+	}
+}
+
+func defaultDOPathTemplate() string {
+	switch runtime.GOOS {
+	case "windows":
+		return `C:\Vecow\ECX1K\do%d.value`
+	case "darwin":
+		return "/tmp/astro-control/do%d.value"
+	default:
+		return "/sys/class/gpio/gpio%d/value"
+	}
+}
+
+func listenOnFirstAvailablePort(startPort int) (net.Listener, string) {
+	for portNumber := startPort; portNumber <= 65535; portNumber++ {
+		address := fmt.Sprintf("127.0.0.1:%d", portNumber)
+		httpListener, err := net.Listen("tcp", address)
+		if err == nil {
+			return httpListener, address
+		}
 	}
 
-	return linuxTemplate
+	log.Fatalf("startup: unable to find free port from %d", startPort)
+	return nil, ""
 }
 
 func waitForServerReadiness(address string, timeout time.Duration) {
@@ -247,6 +270,52 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+func handleOpenRepository(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		responseWriter.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	err := openURLInExternalBrowser("https://github.com/matveynator/chicha-astro-control")
+	if err != nil {
+		writeJSONError(responseWriter, http.StatusInternalServerError, "failed to open external browser")
+		log.Printf("repository: open external browser failed: %v", err)
+		return
+	}
+
+	responseWriter.WriteHeader(http.StatusNoContent)
+}
+
+func openURLInExternalBrowser(repositoryURL string) error {
+	var commandName string
+	var commandArguments []string
+
+	switch runtime.GOOS {
+	case "windows":
+		commandName = "cmd"
+		commandArguments = []string{"/c", "start", "", repositoryURL}
+	case "darwin":
+		commandName = "open"
+		commandArguments = []string{"-n", repositoryURL}
+	default:
+		commandName = "xdg-open"
+		commandArguments = []string{repositoryURL}
+	}
+
+	openCommand := exec.Command(commandName, commandArguments...)
+	if err := openCommand.Start(); err != nil {
+		return err
+	}
+
+	go func() {
+		if err := openCommand.Wait(); err != nil {
+			log.Printf("repository: external browser command finished with error: %v", err)
+		}
+	}()
+
+	return nil
 }
 
 // =============================
@@ -886,6 +955,14 @@ func writeJSON(writer http.ResponseWriter, payload any) {
 	_ = json.NewEncoder(writer).Encode(payload)
 }
 
+func writeJSONError(writer http.ResponseWriter, statusCode int, message string) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(statusCode)
+	_ = json.NewEncoder(writer).Encode(map[string]string{
+		"error": message,
+	})
+}
+
 // =============================
 // Static file serving.
 // =============================
@@ -894,12 +971,6 @@ func handleRequest(writer http.ResponseWriter, request *http.Request) {
 	requestedFile := strings.TrimPrefix(path.Clean("/"+request.URL.Path), "/")
 	if requestedFile == "" || requestedFile == "." {
 		requestedFile = "index.html"
-	}
-
-	fullPathToFile := filepath.Join(*directoryFlag, filepath.FromSlash(requestedFile))
-	if fileExists(fullPathToFile) {
-		http.ServeFile(writer, request, fullPathToFile)
-		return
 	}
 
 	if serveEmbeddedFile(writer, requestedFile) {
@@ -934,14 +1005,6 @@ func serveEmbeddedFile(writer http.ResponseWriter, filename string) bool {
 
 	_, _ = writer.Write(fileData)
 	return true
-}
-
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return err == nil && !info.IsDir()
 }
 
 func getContentType(filename string) string {
