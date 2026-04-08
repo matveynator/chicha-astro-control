@@ -28,28 +28,15 @@
     .panel h2 { margin: 0 0 8px; font-size: 14px; }
     .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; overflow: hidden; }
     .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: rgba(9, 14, 28, var(--ui-alpha)); }
-    .channel-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-    .channel-name { font-size: 12px; color: var(--muted); }
-    .lamp { width: 10px; height: 10px; border-radius: 999px; background: var(--gray); border: 1px solid rgba(255,255,255,0.1); }
-    .lamp.on { background: var(--green); box-shadow: 0 0 8px rgba(34, 197, 94, 0.8); }
-    .lamp.off { background: #94a3b8; }
-
     .io-buttons { display: flex; gap: 6px; }
     button { border: 1px solid transparent; border-radius: 8px; height: 28px; font-size: 12px; color: white; cursor: pointer; background: rgba(51, 65, 85, var(--ui-alpha)); }
     .button-on, .button-off { flex: 1; }
     .button-on.active { background: rgba(34, 197, 94, var(--ui-alpha)); color: #06270f; font-weight: 700; }
     .button-off.active { background: rgba(156, 163, 175, var(--ui-alpha)); color: #0b1020; font-weight: 700; }
 
-    .pwm-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; }
+    .pwm-row { display: grid; grid-template-columns: 1fr; align-items: center; gap: 3px; }
     input[type="range"] { width: 100%; }
-    .pwm-value { min-width: 38px; text-align: right; color: var(--muted); font-size: 12px; }
-
-    .label-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; }
-    .label-row input { height: 28px; border-radius: 8px; border: 1px solid var(--card-border); background: rgba(15, 23, 42, var(--ui-alpha)); color: var(--text); padding: 0 8px; font-size: 12px; }
-    .button-edit { width: 32px; background: rgba(51, 65, 85, var(--ui-alpha)); }
-    .button-save { width: 74px; background: rgba(71, 85, 105, var(--ui-alpha)); }
-    .button-save.saved { background: rgba(34, 197, 94, var(--ui-alpha)); color: #06270f; }
-    .button-save.unsaved { background: rgba(59, 130, 246, var(--ui-alpha)); }
+    .pwm-scale-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
 
     .input-display {
       position: relative;
@@ -135,6 +122,54 @@
       text-transform: uppercase;
       letter-spacing: 0.7px;
     }
+    .output-display {
+      position: relative;
+      border: 1px solid #28354f;
+      border-radius: 10px;
+      min-height: 146px;
+      background: linear-gradient(180deg, rgba(15, 23, 42, var(--ui-alpha)), rgba(16, 26, 49, var(--ui-alpha)));
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .output-corner-indicator {
+      position: absolute;
+      left: 7px;
+      top: 7px;
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: rgba(100, 116, 139, var(--ui-alpha));
+    }
+    .output-corner-indicator.on {
+      background: rgba(34, 197, 94, var(--ui-alpha));
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.95);
+    }
+    .output-header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-left: 14px;
+      min-height: 30px;
+    }
+    .output-label-title { font-size: 14px; font-weight: 700; text-transform: uppercase; max-width: 78%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .output-header-actions { display: flex; gap: 6px; }
+    .output-name-editor {
+      display: flex;
+      gap: 6px;
+      margin-left: 14px;
+    }
+    .output-name-editor input {
+      flex: 1;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid #32415f;
+      background: rgba(11, 18, 34, var(--ui-alpha));
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -163,8 +198,7 @@
     pendingRequest: false,
     errorText: "",
     editingInputLabelsByChannel: {},
-    editingOutputLabelsByChannel: {},
-    savedHighlightByLabelKey: {}
+    editingOutputLabelsByChannel: {}
   };
 
   const inputGridElement = document.getElementById("input-grid");
@@ -262,24 +296,66 @@
 
     sortedOutputChannels.forEach(function renderSingleOutput(outputChannel) {
       const outputState = applicationModel.outputsByChannel[outputChannel];
-      const labelStateKey = "output-" + outputChannel;
-      const outputDraftLabel = applicationModel.editingOutputLabelsByChannel[outputChannel] || outputState.label;
-
       const outputCardElement = document.createElement("article");
       outputCardElement.className = "channel-card";
 
-      const channelHeaderElement = document.createElement("div");
-      channelHeaderElement.className = "channel-header";
+      const outputDisplayElement = document.createElement("section");
+      outputDisplayElement.className = "output-display";
 
-      const channelTitleElement = document.createElement("span");
-      channelTitleElement.className = "channel-name";
-      channelTitleElement.textContent = "DO" + (outputChannel - 1);
+      const outputCornerIndicatorElement = document.createElement("span");
+      outputCornerIndicatorElement.className = outputState.power === "on" ? "output-corner-indicator on" : "output-corner-indicator";
+      outputDisplayElement.appendChild(outputCornerIndicatorElement);
 
-      const lampElement = document.createElement("span");
-      lampElement.className = "lamp " + outputState.power;
+      const isEditingOutputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, outputChannel);
+      const outputDraftLabel = isEditingOutputLabel ? applicationModel.editingOutputLabelsByChannel[outputChannel] : outputState.label;
 
-      channelHeaderElement.appendChild(channelTitleElement);
-      channelHeaderElement.appendChild(lampElement);
+      if (isEditingOutputLabel) {
+        const outputNameEditorElement = document.createElement("div");
+        outputNameEditorElement.className = "output-name-editor";
+
+        const saveOutputNameButtonElement = document.createElement("button");
+        saveOutputNameButtonElement.className = "input-icon-button";
+        saveOutputNameButtonElement.textContent = "💾";
+        saveOutputNameButtonElement.disabled = applicationModel.pendingRequest;
+        saveOutputNameButtonElement.addEventListener("click", function handleOutputLabelSave() {
+          void sendOutputLabelToServer(outputChannel, outputDraftLabel);
+        });
+
+        const outputNameFieldElement = document.createElement("input");
+        outputNameFieldElement.value = outputDraftLabel;
+        outputNameFieldElement.disabled = applicationModel.pendingRequest;
+        outputNameFieldElement.addEventListener("input", function handleOutputLabelTyping() {
+          applicationModel.editingOutputLabelsByChannel[outputChannel] = outputNameFieldElement.value;
+        });
+
+        outputNameEditorElement.appendChild(saveOutputNameButtonElement);
+        outputNameEditorElement.appendChild(outputNameFieldElement);
+        outputDisplayElement.appendChild(outputNameEditorElement);
+      } else {
+        const outputHeaderRowElement = document.createElement("div");
+        outputHeaderRowElement.className = "output-header-row";
+
+        const outputLabelTitleElement = document.createElement("div");
+        outputLabelTitleElement.className = "output-label-title";
+        outputLabelTitleElement.textContent = outputState.label;
+
+        const outputHeaderActionsElement = document.createElement("div");
+        outputHeaderActionsElement.className = "output-header-actions";
+
+        const editOutputNameButtonElement = document.createElement("button");
+        editOutputNameButtonElement.className = "input-icon-button";
+        editOutputNameButtonElement.textContent = "✎";
+        editOutputNameButtonElement.disabled = applicationModel.pendingRequest;
+        editOutputNameButtonElement.addEventListener("click", function handleOutputLabelEditStart() {
+          applicationModel.editingOutputLabelsByChannel[outputChannel] = outputState.label;
+          renderFromModel();
+        });
+
+        outputHeaderActionsElement.appendChild(editOutputNameButtonElement);
+        outputHeaderRowElement.appendChild(outputLabelTitleElement);
+        outputHeaderRowElement.appendChild(outputHeaderActionsElement);
+        outputDisplayElement.appendChild(outputHeaderRowElement);
+      }
 
       const buttonsRowElement = document.createElement("div");
       buttonsRowElement.className = "io-buttons";
@@ -317,60 +393,26 @@
         void sendOutputPWMToServer(outputChannel, Number(pwmSliderElement.value));
       });
 
-      const pwmValueElement = document.createElement("span");
-      pwmValueElement.className = "pwm-value";
-      pwmValueElement.textContent = String(outputState.pwm) + "%";
+      const pwmScaleRowElement = document.createElement("div");
+      pwmScaleRowElement.className = "pwm-scale-row";
+      const pwmScaleLeftElement = document.createElement("span");
+      pwmScaleLeftElement.textContent = "0%";
+      const pwmScaleRightElement = document.createElement("span");
+      pwmScaleRightElement.textContent = String(outputState.pwm) + "%";
+      pwmSliderElement.addEventListener("input", function handlePWMLiveText() {
+        pwmScaleRightElement.textContent = String(pwmSliderElement.value) + "%";
+      });
 
       pwmRowElement.appendChild(pwmSliderElement);
-      pwmRowElement.appendChild(pwmValueElement);
+      pwmScaleRowElement.appendChild(pwmScaleLeftElement);
+      pwmScaleRowElement.appendChild(pwmScaleRightElement);
+      pwmRowElement.appendChild(pwmScaleRowElement);
 
-      const labelRowElement = buildOutputLabelControls(outputChannel, outputDraftLabel, labelStateKey);
-
-      outputCardElement.appendChild(channelHeaderElement);
-      outputCardElement.appendChild(buttonsRowElement);
-      outputCardElement.appendChild(pwmRowElement);
-      outputCardElement.appendChild(labelRowElement);
+      outputDisplayElement.appendChild(buttonsRowElement);
+      outputDisplayElement.appendChild(pwmRowElement);
+      outputCardElement.appendChild(outputDisplayElement);
       outputGridElement.appendChild(outputCardElement);
     });
-  }
-
-  function buildOutputLabelControls(channel, labelText, labelStateKey) {
-    const labelRowElement = document.createElement("div");
-    labelRowElement.className = "label-row";
-
-    const labelInputElement = document.createElement("input");
-    labelInputElement.value = labelText;
-    labelInputElement.disabled = !Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, channel);
-    labelInputElement.addEventListener("input", function handleLabelInputChange() {
-      applicationModel.editingOutputLabelsByChannel[channel] = labelInputElement.value;
-      applicationModel.savedHighlightByLabelKey[labelStateKey] = false;
-    });
-
-    const editButtonElement = document.createElement("button");
-    editButtonElement.className = "button-edit";
-    editButtonElement.textContent = "✎";
-    editButtonElement.disabled = applicationModel.pendingRequest;
-    editButtonElement.addEventListener("click", function handleEditStart() {
-      applicationModel.editingOutputLabelsByChannel[channel] = labelText;
-      renderFromModel();
-    });
-
-    const saveButtonElement = document.createElement("button");
-    const hasUnsavedLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, channel);
-    const isSavedLabel = applicationModel.savedHighlightByLabelKey[labelStateKey] === true;
-    saveButtonElement.className = isSavedLabel ? "button-save saved" : (hasUnsavedLabel ? "button-save unsaved" : "button-save");
-    saveButtonElement.textContent = "Сохранить";
-    saveButtonElement.disabled = applicationModel.pendingRequest || !hasUnsavedLabel;
-    saveButtonElement.addEventListener("click", function handleLabelSave() {
-      const nextLabel = applicationModel.editingOutputLabelsByChannel[channel];
-      void sendOutputLabelToServer(channel, nextLabel, labelStateKey);
-    });
-
-    labelRowElement.appendChild(labelInputElement);
-    labelRowElement.appendChild(editButtonElement);
-    labelRowElement.appendChild(saveButtonElement);
-
-    return labelRowElement;
   }
 
   function applyStateFromServer(serverState) {
@@ -449,7 +491,7 @@
     });
   }
 
-  async function sendOutputLabelToServer(channel, nextLabel, labelStateKey) {
+  async function sendOutputLabelToServer(channel, nextLabel) {
     await runServerCommand(async function sendLabelCommand() {
       const labelResponse = await fetch("/api/label", {
         method: "POST",
@@ -461,7 +503,6 @@
       }
 
       delete applicationModel.editingOutputLabelsByChannel[channel];
-      applicationModel.savedHighlightByLabelKey[labelStateKey] = true;
       applyStateFromServer(await labelResponse.json());
     });
   }

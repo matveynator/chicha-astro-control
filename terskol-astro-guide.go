@@ -42,6 +42,7 @@ var (
 	inputOnVoltageFlag         = flag.Float64("input-on-voltage", 24.0, "voltage value used when DI source is digital and signal is active")
 	inputOffVoltageFlag        = flag.Float64("input-off-voltage", 0.0, "voltage value used when DI source is digital and signal is inactive")
 	inputThresholdVoltageFlag  = flag.Float64("input-threshold-voltage", 2.0, "threshold used to map numeric DI voltage to on/off signal")
+	pwmFrequencyFlag           = flag.Float64("pwm-frequency-hz", 100.0, "software PWM frequency for outputs")
 )
 
 const (
@@ -117,6 +118,15 @@ type stateCommand struct {
 	reply   chan stateReply
 }
 
+type pwmController struct {
+	channelCommands []chan pwmChannelCommand
+}
+
+type pwmChannelCommand struct {
+	power string
+	pwm   int
+}
+
 type stateReply struct {
 	state appState
 	err   error
@@ -135,6 +145,7 @@ func main() {
 	}
 
 	stateCommands := make(chan stateCommand)
+	outputPWMController := startPWMController(resolvedIOPaths.outputTemplate, *pwmFrequencyFlag)
 	go runStateOwner(
 		stateCommands,
 		resolvedIOPaths,
@@ -144,6 +155,7 @@ func main() {
 			inputThresholdVoltage: *inputThresholdVoltageFlag,
 		},
 		*labelsFileFlag,
+		outputPWMController,
 	)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
@@ -226,7 +238,7 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string) {
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string, outputPWMController *pwmController) {
 	state := buildInitialState(loadLabels(labelsFile))
 	inputMetrics := buildInitialInputMetrics()
 	refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
@@ -238,20 +250,22 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_output_power":
-			nextState, err := applyOutputPower(state, command.channel, command.power, resolvedIOPaths.outputTemplate)
+			nextState, err := applyOutputPower(state, command.channel, command.power)
 			if err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
+			outputPWMController.Apply(nextState.Outputs[command.channel-1])
 			state = nextState
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_output_pwm":
-			nextState, err := applyOutputPWM(state, command.channel, command.pwm, resolvedIOPaths.outputTemplate)
+			nextState, err := applyOutputPWM(state, command.channel, command.pwm)
 			if err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
+			outputPWMController.Apply(nextState.Outputs[command.channel-1])
 			state = nextState
 			command.reply <- stateReply{state: cloneState(state)}
 
@@ -300,7 +314,7 @@ func buildInitialState(savedLabels map[string]string) appState {
 	return appState{Inputs: inputs, Outputs: outputs}
 }
 
-func applyOutputPower(state appState, channel int, nextPower string, outputPathTemplate string) (appState, error) {
+func applyOutputPower(state appState, channel int, nextPower string) (appState, error) {
 	if channel < 1 || channel > outputCount {
 		return state, errors.New("invalid output channel")
 	}
@@ -308,12 +322,11 @@ func applyOutputPower(state appState, channel int, nextPower string, outputPathT
 		return state, errors.New("power must be on or off")
 	}
 
-	if err := writeOutputPower(channel, nextPower, outputPathTemplate); err != nil {
-		return state, err
-	}
-
 	nextState := cloneState(state)
 	nextState.Outputs[channel-1].Power = nextPower
+	if nextPower == "on" && nextState.Outputs[channel-1].PWM == 0 {
+		nextState.Outputs[channel-1].PWM = 100
+	}
 	if nextPower == "off" {
 		nextState.Outputs[channel-1].PWM = 0
 	}
@@ -321,7 +334,7 @@ func applyOutputPower(state appState, channel int, nextPower string, outputPathT
 	return nextState, nil
 }
 
-func applyOutputPWM(state appState, channel int, nextPWM int, outputPathTemplate string) (appState, error) {
+func applyOutputPWM(state appState, channel int, nextPWM int) (appState, error) {
 	if channel < 1 || channel > outputCount {
 		return state, errors.New("invalid output channel")
 	}
@@ -332,10 +345,6 @@ func applyOutputPWM(state appState, channel int, nextPWM int, outputPathTemplate
 	nextPower := "off"
 	if nextPWM > 0 {
 		nextPower = "on"
-	}
-
-	if err := writeOutputPower(channel, nextPower, outputPathTemplate); err != nil {
-		return state, err
 	}
 
 	nextState := cloneState(state)
@@ -452,6 +461,104 @@ func formatFrequency(frequencyHz float64) string {
 	return fmt.Sprintf("%.2f Hz", frequencyHz)
 }
 
+func startPWMController(outputPathTemplate string, pwmFrequencyHz float64) *pwmController {
+	if pwmFrequencyHz <= 0 {
+		pwmFrequencyHz = 100
+	}
+
+	controller := &pwmController{
+		channelCommands: make([]chan pwmChannelCommand, outputCount),
+	}
+
+	for channel := 1; channel <= outputCount; channel++ {
+		channelCommandQueue := make(chan pwmChannelCommand, 1)
+		controller.channelCommands[channel-1] = channelCommandQueue
+		go runPWMChannelLoop(channel, fmt.Sprintf(outputPathTemplate, channel), pwmFrequencyHz, channelCommandQueue)
+	}
+
+	return controller
+}
+
+func (controller *pwmController) Apply(output outputState) {
+	if output.Channel < 1 || output.Channel > len(controller.channelCommands) {
+		return
+	}
+
+	nextCommand := pwmChannelCommand{power: output.Power, pwm: output.PWM}
+	channelCommandQueue := controller.channelCommands[output.Channel-1]
+	select {
+	case channelCommandQueue <- nextCommand:
+		return
+	default:
+		<-channelCommandQueue
+		channelCommandQueue <- nextCommand
+	}
+}
+
+func runPWMChannelLoop(channel int, outputPath string, pwmFrequencyHz float64, channelCommands <-chan pwmChannelCommand) {
+	currentCommand := pwmChannelCommand{power: "off", pwm: 0}
+	pwmPeriod := time.Duration(float64(time.Second) / pwmFrequencyHz)
+	log.Printf("pwm: channel=%d path=%s frequency=%.2fHz", channel, outputPath, pwmFrequencyHz)
+
+	for {
+		if currentCommand.power != "on" || currentCommand.pwm <= 0 {
+			if err := writeOutputRaw(outputPath, "0"); err != nil {
+				log.Printf("pwm: channel=%d write low failed: %v", channel, err)
+			}
+			currentCommand = <-channelCommands
+			continue
+		}
+
+		if currentCommand.pwm >= 100 {
+			if err := writeOutputRaw(outputPath, "1"); err != nil {
+				log.Printf("pwm: channel=%d write high failed: %v", channel, err)
+			}
+			currentCommand = <-channelCommands
+			continue
+		}
+
+		onDuration := time.Duration(float64(pwmPeriod) * (float64(currentCommand.pwm) / 100.0))
+		offDuration := pwmPeriod - onDuration
+
+		if err := writeOutputRaw(outputPath, "1"); err != nil {
+			log.Printf("pwm: channel=%d write high failed: %v", channel, err)
+		}
+		if hasNewCommand, nextCommand := waitPWMStage(channelCommands, onDuration); hasNewCommand {
+			currentCommand = nextCommand
+			continue
+		}
+
+		if err := writeOutputRaw(outputPath, "0"); err != nil {
+			log.Printf("pwm: channel=%d write low failed: %v", channel, err)
+		}
+		if hasNewCommand, nextCommand := waitPWMStage(channelCommands, offDuration); hasNewCommand {
+			currentCommand = nextCommand
+			continue
+		}
+	}
+}
+
+func waitPWMStage(channelCommands <-chan pwmChannelCommand, stageDuration time.Duration) (bool, pwmChannelCommand) {
+	if stageDuration <= 0 {
+		select {
+		case nextCommand := <-channelCommands:
+			return true, nextCommand
+		default:
+			return false, pwmChannelCommand{}
+		}
+	}
+
+	stageTimer := time.NewTimer(stageDuration)
+	defer stageTimer.Stop()
+
+	select {
+	case nextCommand := <-channelCommands:
+		return true, nextCommand
+	case <-stageTimer.C:
+		return false, pwmChannelCommand{}
+	}
+}
+
 func writeOutputPower(channel int, nextPower string, outputPathTemplate string) error {
 	nextValue := "0"
 	if nextPower == "on" {
@@ -459,10 +566,13 @@ func writeOutputPower(channel int, nextPower string, outputPathTemplate string) 
 	}
 
 	outputPath := fmt.Sprintf(outputPathTemplate, channel)
+	return writeOutputRaw(outputPath, nextValue)
+}
+
+func writeOutputRaw(outputPath string, nextValue string) error {
 	if err := os.WriteFile(outputPath, []byte(nextValue), 0o644); err != nil {
 		return fmt.Errorf("write DIO output %q: %w", outputPath, err)
 	}
-
 	return nil
 }
 
