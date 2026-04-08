@@ -19,15 +19,13 @@
 
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Inter, Segoe UI, Arial, sans-serif; background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), url("/zeiss2000.jpg") center / cover fixed no-repeat, var(--background); color: var(--text); }
-    main { max-width: min(1480px, 100%); margin: 0 auto; padding: clamp(8px, 1.1vw, 16px); height: 100dvh; overflow: hidden; display: flex; flex-direction: column; gap: clamp(6px, 0.8vw, 12px); }
-    h1 { font-size: clamp(14px, 1.4vw, 22px); margin: 0; line-height: 1.2; }
-    .subtitle { color: var(--muted); margin: 0; font-size: clamp(10px, 0.9vw, 13px); }
-    #error-text { min-height: 18px; color: #fca5a5; font-size: clamp(10px, 0.9vw, 13px); margin: 0; }
-    .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 12px); min-height: 0; flex: 1; }
-    .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: clamp(6px, 0.8vw, 12px); display: flex; flex-direction: column; min-height: 0; }
+    main { max-width: min(1480px, 100%); margin: 0 auto; padding: clamp(6px, 0.8vw, 10px); display: flex; flex-direction: column; gap: 6px; }
+    #error-text { min-height: 16px; color: #fca5a5; font-size: clamp(10px, 0.85vw, 12px); margin: 0; }
+    .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
+    .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; }
     .panel h2 { margin: 0 0 8px; font-size: clamp(11px, 1vw, 15px); }
-    .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 10px); overflow: auto; min-height: 0; }
-    .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: clamp(5px, 0.7vw, 9px); display: flex; flex-direction: column; gap: 6px; background: rgba(9, 14, 28, var(--ui-alpha)); }
+    .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 5px; display: flex; flex-direction: column; gap: 4px; background: rgba(9, 14, 28, var(--ui-alpha)); }
     .io-buttons { display: flex; gap: 6px; }
     button { border: 1px solid transparent; border-radius: 8px; height: clamp(24px, 2vw, 32px); font-size: clamp(11px, 0.9vw, 13px); color: white; cursor: pointer; background: rgba(51, 65, 85, var(--ui-alpha)); }
     .button-on, .button-off { flex: 1; }
@@ -42,12 +40,12 @@
       position: relative;
       border: 1px solid #28354f;
       border-radius: 10px;
-      min-height: 94px;
+      min-height: 74px;
       background: linear-gradient(180deg, rgba(15, 23, 42, var(--ui-alpha)), rgba(16, 26, 49, var(--ui-alpha)));
       padding: 8px;
       display: grid;
       grid-template-rows: auto 1fr;
-      gap: 6px;
+      gap: 4px;
     }
     .input-corner-indicator {
       position: absolute;
@@ -111,7 +109,7 @@
       letter-spacing: 0.5px;
       font-family: "Segoe UI", "Roboto Mono", monospace;
       color: #dbe7ff;
-      min-height: 42px;
+      min-height: 34px;
     }
     .input-voltage-line.on { color: #86efac; }
     .input-status-line {
@@ -130,7 +128,7 @@
       padding: 8px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 4px;
     }
     .output-corner-indicator {
       position: absolute;
@@ -153,7 +151,6 @@
       min-height: 30px;
     }
     .output-label-title { font-size: clamp(11px, 1vw, 14px); font-weight: 700; text-transform: uppercase; max-width: 78%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .port-title { font-size: clamp(10px, 0.8vw, 12px); color: var(--muted); margin-left: 14px; }
     .output-header-actions { display: flex; gap: 6px; }
     .output-name-editor {
       display: flex;
@@ -181,18 +178,16 @@
 </head>
 <body>
 <main>
-  <h1>Обсерватория Терскол: управление GPIO/DIO портами ECX-1000</h1>
-  <p class="subtitle">DIO 3.3V логика: 8 DI + 8 DO, PWM-регулировка выходного уровня</p>
   <p id="error-text"></p>
 
   <section class="layout">
     <article class="panel">
-      <h2>Входящие сигналы (реальные пины 1..8)</h2>
+      <h2>Датчики (реальные пины 1..8)</h2>
       <div id="input-grid" class="channels"></div>
     </article>
 
     <article class="panel">
-      <h2>Исходящие сигналы (реальные пины 11..18)</h2>
+      <h2>Управление оборудованием (реальные пины 11..18)</h2>
       <div id="output-grid" class="channels"></div>
     </article>
   </section>
@@ -205,7 +200,8 @@
     pendingRequest: false,
     errorText: "",
     editingInputLabelsByChannel: {},
-    editingOutputLabelsByChannel: {}
+    editingOutputLabelsByChannel: {},
+    activeOutputSliderByChannel: {}
   };
   const outputMaxVoltage = 3.3;
 
@@ -227,7 +223,6 @@
       const inputState = applicationModel.inputsByChannel[inputChannel];
       const inputLabelDraft = applicationModel.editingInputLabelsByChannel[inputChannel];
       const isEditingInputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingInputLabelsByChannel, inputChannel);
-      const inputPinNumber = inputChannel;
 
       const inputCardElement = document.createElement("article");
       inputCardElement.className = "channel-card";
@@ -281,10 +276,6 @@
         inputHeaderRowElement.appendChild(editInputNameButtonElement);
         inputDisplayElement.appendChild(inputHeaderRowElement);
 
-        const inputPortTitleElement = document.createElement("div");
-        inputPortTitleElement.className = "port-title";
-        inputPortTitleElement.textContent = "ПИН " + String(inputPinNumber);
-        inputDisplayElement.appendChild(inputPortTitleElement);
       }
 
       const inputVoltageLineElement = document.createElement("div");
@@ -322,7 +313,6 @@
 
       const isEditingOutputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, outputChannel);
       const outputDraftLabel = isEditingOutputLabel ? applicationModel.editingOutputLabelsByChannel[outputChannel] : outputState.label;
-      const outputPinNumber = outputChannel + 10;
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -372,10 +362,6 @@
         outputHeaderRowElement.appendChild(outputHeaderActionsElement);
         outputDisplayElement.appendChild(outputHeaderRowElement);
 
-        const outputPortTitleElement = document.createElement("div");
-        outputPortTitleElement.className = "port-title";
-        outputPortTitleElement.textContent = "ПИН " + String(outputPinNumber);
-        outputDisplayElement.appendChild(outputPortTitleElement);
       }
 
       const buttonsRowElement = document.createElement("div");
@@ -410,7 +396,17 @@
       pwmSliderElement.step = "1";
       pwmSliderElement.value = String(outputState.pwm);
       pwmSliderElement.disabled = applicationModel.pendingRequest;
+      pwmSliderElement.addEventListener("pointerdown", function handleOutputSliderPointerDown() {
+        applicationModel.activeOutputSliderByChannel[outputChannel] = true;
+      });
+      pwmSliderElement.addEventListener("pointerup", function handleOutputSliderPointerUp() {
+        delete applicationModel.activeOutputSliderByChannel[outputChannel];
+      });
+      pwmSliderElement.addEventListener("blur", function handleOutputSliderBlur() {
+        delete applicationModel.activeOutputSliderByChannel[outputChannel];
+      });
       pwmSliderElement.addEventListener("change", function handlePWMChange() {
+        delete applicationModel.activeOutputSliderByChannel[outputChannel];
         void sendOutputPWMToServer(outputChannel, Number(pwmSliderElement.value));
       });
 
@@ -437,7 +433,7 @@
   }
 
   function applyStateFromServer(serverState) {
-    if (hasActiveLabelEditing()) {
+    if (hasActiveEditing()) {
       return;
     }
 
@@ -554,7 +550,7 @@
 
   function startSignalRefreshLoop() {
     setInterval(function pollState() {
-      if (hasActiveLabelEditing()) {
+      if (hasActiveEditing()) {
         return;
       }
 
@@ -565,10 +561,11 @@
     }, 600);
   }
 
-  function hasActiveLabelEditing() {
+  function hasActiveEditing() {
     const hasInputEditing = Object.keys(applicationModel.editingInputLabelsByChannel).length > 0;
     const hasOutputEditing = Object.keys(applicationModel.editingOutputLabelsByChannel).length > 0;
-    return hasInputEditing || hasOutputEditing;
+    const hasActiveOutputSlider = Object.keys(applicationModel.activeOutputSliderByChannel).length > 0;
+    return hasInputEditing || hasOutputEditing || hasActiveOutputSlider;
   }
 
   requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {

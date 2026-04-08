@@ -38,7 +38,7 @@ var (
 	dioLinuxInputPathTemplate  = flag.String("dio-linux-input-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO input file path template")
 	dioWindowsOutputPathFlag   = flag.String("dio-windows-output-path-template", `C:\Vecow\ECX1K\do%d.value`, "Windows DIO output file path template")
 	dioWindowsInputPathFlag    = flag.String("dio-windows-input-path-template", `C:\Vecow\ECX1K\di%d.value`, "Windows DIO input file path template")
-	labelsFileFlag             = flag.String("labels-file", "dio-labels.json", "path to labels file")
+	settingsFileFlag           = flag.String("settings-file", "", "path to settings json file")
 	inputOnVoltageFlag         = flag.Float64("input-on-voltage", 24.0, "voltage value used when DI source is digital and signal is active")
 	inputOffVoltageFlag        = flag.Float64("input-off-voltage", 0.0, "voltage value used when DI source is digital and signal is inactive")
 	inputThresholdVoltageFlag  = flag.Float64("input-threshold-voltage", 2.0, "threshold used to map numeric DI voltage to on/off signal")
@@ -102,6 +102,17 @@ type runtimeConfig struct {
 	inputThresholdVoltage float64
 }
 
+type savedOutputState struct {
+	Channel int    `json:"channel"`
+	Power   string `json:"power"`
+	PWM     int    `json:"pwm"`
+}
+
+type persistedSettings struct {
+	Labels  map[string]string  `json:"labels"`
+	Outputs []savedOutputState `json:"outputs"`
+}
+
 type inputMetric struct {
 	lastSignal string
 	lastEdgeAt time.Time
@@ -146,6 +157,10 @@ func main() {
 
 	stateCommands := make(chan stateCommand)
 	outputPWMController := startPWMController(resolvedIOPaths.outputTemplate, *pwmFrequencyFlag)
+	settingsFile, err := resolveSettingsFilePath(*settingsFileFlag)
+	if err != nil {
+		log.Fatalf("startup: settings path resolve failed: %v", err)
+	}
 	go runStateOwner(
 		stateCommands,
 		resolvedIOPaths,
@@ -154,7 +169,7 @@ func main() {
 			inputOffVoltage:       *inputOffVoltageFlag,
 			inputThresholdVoltage: *inputThresholdVoltageFlag,
 		},
-		*labelsFileFlag,
+		settingsFile,
 		outputPWMController,
 	)
 
@@ -187,7 +202,7 @@ func main() {
 	}
 	defer window.Destroy()
 
-	window.SetTitle("DIO/DO Control · ECX-1000-2G")
+	window.SetTitle("Обсерватория Терскол: управление GPIO/DIO портами ECX-1000")
 	window.SetSize(1120, 760, webview.HintNone)
 	window.Navigate("http://" + address)
 
@@ -238,8 +253,12 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string, outputPWMController *pwmController) {
-	state := buildInitialState(loadLabels(labelsFile))
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, settingsFile string, outputPWMController *pwmController) {
+	loadedSettings := loadSettings(settingsFile)
+	state := buildInitialState(loadedSettings.Labels, indexOutputsByChannel(loadedSettings.Outputs))
+	for _, configuredOutput := range state.Outputs {
+		outputPWMController.Apply(configuredOutput)
+	}
 	inputMetrics := buildInitialInputMetrics()
 	refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
 
@@ -255,6 +274,10 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
+			if err := saveSettings(settingsFile, nextState); err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
 			outputPWMController.Apply(nextState.Outputs[command.channel-1])
 			state = nextState
 			command.reply <- stateReply{state: cloneState(state)}
@@ -262,6 +285,10 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 		case "set_output_pwm":
 			nextState, err := applyOutputPWM(state, command.channel, command.pwm)
 			if err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			if err := saveSettings(settingsFile, nextState); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
@@ -275,7 +302,7 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
-			if err := saveLabels(labelsFile, nextState); err != nil {
+			if err := saveSettings(settingsFile, nextState); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
@@ -288,14 +315,11 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 	}
 }
 
-func buildInitialState(savedLabels map[string]string) appState {
+func buildInitialState(savedLabels map[string]string, savedOutputs map[int]savedOutputState) appState {
 	inputs := make([]inputState, 0, inputCount)
 	for channelIndex := 1; channelIndex <= inputCount; channelIndex++ {
 		labelKey := "input-" + strconv.Itoa(channelIndex)
-		label := strings.TrimSpace(savedLabels[labelKey])
-		if label == "" {
-			label = fmt.Sprintf("DI %d", channelIndex-1)
-		}
+		label := normalizeInputLabel(channelIndex, savedLabels[labelKey])
 
 		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Hz: "0.00 Hz", Label: label})
 	}
@@ -303,12 +327,20 @@ func buildInitialState(savedLabels map[string]string) appState {
 	outputs := make([]outputState, 0, outputCount)
 	for channelIndex := 1; channelIndex <= outputCount; channelIndex++ {
 		labelKey := "output-" + strconv.Itoa(channelIndex)
-		label := strings.TrimSpace(savedLabels[labelKey])
-		if label == "" {
-			label = fmt.Sprintf("DO %d", channelIndex-1)
+		label := normalizeOutputLabel(channelIndex, savedLabels[labelKey])
+
+		initialPower := "off"
+		initialPWM := 0
+		if savedOutput, exists := savedOutputs[channelIndex]; exists {
+			if savedOutput.Power == "on" || savedOutput.Power == "off" {
+				initialPower = savedOutput.Power
+			}
+			if savedOutput.PWM >= 0 && savedOutput.PWM <= 100 {
+				initialPWM = savedOutput.PWM
+			}
 		}
 
-		outputs = append(outputs, outputState{Channel: channelIndex, Power: "off", PWM: 0, Label: label})
+		outputs = append(outputs, outputState{Channel: channelIndex, Power: initialPower, PWM: initialPWM, Label: label})
 	}
 
 	return appState{Inputs: inputs, Outputs: outputs}
@@ -327,9 +359,6 @@ func applyOutputPower(state appState, channel int, nextPower string) (appState, 
 	if nextPower == "on" && nextState.Outputs[channel-1].PWM == 0 {
 		nextState.Outputs[channel-1].PWM = 100
 	}
-	if nextPower == "off" {
-		nextState.Outputs[channel-1].PWM = 0
-	}
 
 	return nextState, nil
 }
@@ -342,22 +371,13 @@ func applyOutputPWM(state appState, channel int, nextPWM int) (appState, error) 
 		return state, errors.New("pwm must be between 0 and 100")
 	}
 
-	nextPower := "off"
-	if nextPWM > 0 {
-		nextPower = "on"
-	}
-
 	nextState := cloneState(state)
 	nextState.Outputs[channel-1].PWM = nextPWM
-	nextState.Outputs[channel-1].Power = nextPower
 	return nextState, nil
 }
 
 func applyLabel(state appState, target string, channel int, nextLabel string) (appState, error) {
 	sanitizedLabel := strings.TrimSpace(nextLabel)
-	if sanitizedLabel == "" {
-		return state, errors.New("label is required")
-	}
 
 	nextState := cloneState(state)
 	switch target {
@@ -365,10 +385,16 @@ func applyLabel(state appState, target string, channel int, nextLabel string) (a
 		if channel < 1 || channel > inputCount {
 			return state, errors.New("invalid input channel")
 		}
+		if sanitizedLabel == "" {
+			sanitizedLabel = defaultInputLabel(channel)
+		}
 		nextState.Inputs[channel-1].Label = sanitizedLabel
 	case "output":
 		if channel < 1 || channel > outputCount {
 			return state, errors.New("invalid output channel")
+		}
+		if sanitizedLabel == "" {
+			sanitizedLabel = defaultOutputLabel(channel)
 		}
 		nextState.Outputs[channel-1].Label = sanitizedLabel
 	default:
@@ -376,6 +402,71 @@ func applyLabel(state appState, target string, channel int, nextLabel string) (a
 	}
 
 	return nextState, nil
+}
+
+func defaultInputLabel(channel int) string {
+	return fmt.Sprintf("DI%d", channel)
+}
+
+func defaultOutputLabel(channel int) string {
+	return fmt.Sprintf("DO%d", channel+10)
+}
+
+func normalizeInputLabel(channel int, rawLabel string) string {
+	sanitizedLabel := strings.TrimSpace(rawLabel)
+	defaultLabel := defaultInputLabel(channel)
+	if sanitizedLabel == "" {
+		return defaultLabel
+	}
+
+	prefix, parsedNumber, isPortLabel := parsePortLabel(sanitizedLabel)
+	if !isPortLabel {
+		return sanitizedLabel
+	}
+
+	if prefix != "DI" || parsedNumber != channel {
+		return defaultLabel
+	}
+
+	return defaultLabel
+}
+
+func normalizeOutputLabel(channel int, rawLabel string) string {
+	sanitizedLabel := strings.TrimSpace(rawLabel)
+	defaultLabel := defaultOutputLabel(channel)
+	if sanitizedLabel == "" {
+		return defaultLabel
+	}
+
+	prefix, parsedNumber, isPortLabel := parsePortLabel(sanitizedLabel)
+	if !isPortLabel {
+		return sanitizedLabel
+	}
+
+	if prefix != "DO" || parsedNumber != channel+10 {
+		return defaultLabel
+	}
+
+	return defaultLabel
+}
+
+func parsePortLabel(rawLabel string) (string, int, bool) {
+	compactLabel := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(rawLabel), " ", ""))
+	if len(compactLabel) < 3 {
+		return "", 0, false
+	}
+
+	prefix := compactLabel[:2]
+	if prefix != "DI" && prefix != "DO" {
+		return "", 0, false
+	}
+
+	parsedNumber, err := strconv.Atoi(compactLabel[2:])
+	if err != nil {
+		return "", 0, false
+	}
+
+	return prefix, parsedNumber, true
 }
 
 func cloneState(source appState) appState {
@@ -592,21 +683,81 @@ func readInputSignal(channel int, inputPathTemplate string) (string, error) {
 	return strings.TrimSpace(string(rawSignal)), nil
 }
 
-func loadLabels(labelsFile string) map[string]string {
-	fileData, err := os.ReadFile(labelsFile)
-	if err != nil {
-		return map[string]string{}
+func resolveSettingsFilePath(explicitSettingsFile string) (string, error) {
+	trimmedSettingsPath := strings.TrimSpace(explicitSettingsFile)
+	if trimmedSettingsPath != "" {
+		return trimmedSettingsPath, ensureSettingsFile(trimmedSettingsPath)
 	}
 
-	var labels map[string]string
-	if err := json.Unmarshal(fileData, &labels); err != nil {
-		return map[string]string{}
+	applicationName := filepath.Base(os.Args[0])
+	applicationExtension := filepath.Ext(applicationName)
+	if applicationExtension != "" {
+		applicationName = strings.TrimSuffix(applicationName, applicationExtension)
+	}
+	if applicationName == "" {
+		applicationName = "app"
 	}
 
-	return labels
+	settingsDirectory := ""
+	if runtime.GOOS == "windows" {
+		settingsDirectory = `C:/appname.conf`
+	} else {
+		homeDirectory, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		settingsDirectory = filepath.Join(homeDirectory, ".appname.conf")
+	}
+
+	settingsFile := filepath.Join(settingsDirectory, applicationName+".json")
+	return settingsFile, ensureSettingsFile(settingsFile)
 }
 
-func saveLabels(labelsFile string, state appState) error {
+func ensureSettingsFile(settingsFile string) error {
+	settingsDirectory := filepath.Dir(settingsFile)
+	if err := os.MkdirAll(settingsDirectory, 0o755); err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(settingsFile); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	return os.WriteFile(settingsFile, []byte("{}\n"), 0o644)
+}
+
+func loadSettings(settingsFile string) persistedSettings {
+	fileData, err := os.ReadFile(settingsFile)
+	if err != nil {
+		return persistedSettings{Labels: map[string]string{}, Outputs: []savedOutputState{}}
+	}
+
+	var settings persistedSettings
+	if err := json.Unmarshal(fileData, &settings); err != nil {
+		return persistedSettings{Labels: map[string]string{}, Outputs: []savedOutputState{}}
+	}
+
+	if settings.Labels == nil {
+		settings.Labels = map[string]string{}
+	}
+	if settings.Outputs == nil {
+		settings.Outputs = []savedOutputState{}
+	}
+
+	return settings
+}
+
+func indexOutputsByChannel(savedOutputs []savedOutputState) map[int]savedOutputState {
+	outputsByChannel := make(map[int]savedOutputState, len(savedOutputs))
+	for _, singleOutput := range savedOutputs {
+		outputsByChannel[singleOutput.Channel] = singleOutput
+	}
+	return outputsByChannel
+}
+
+func saveSettings(settingsFile string, state appState) error {
 	labels := map[string]string{}
 	for _, singleInput := range state.Inputs {
 		labels["input-"+strconv.Itoa(singleInput.Channel)] = singleInput.Label
@@ -615,12 +766,22 @@ func saveLabels(labelsFile string, state appState) error {
 		labels["output-"+strconv.Itoa(singleOutput.Channel)] = singleOutput.Label
 	}
 
-	fileData, err := json.MarshalIndent(labels, "", "  ")
+	savedOutputs := make([]savedOutputState, 0, len(state.Outputs))
+	for _, singleOutput := range state.Outputs {
+		savedOutputs = append(savedOutputs, savedOutputState{
+			Channel: singleOutput.Channel,
+			Power:   singleOutput.Power,
+			PWM:     singleOutput.PWM,
+		})
+	}
+
+	settings := persistedSettings{Labels: labels, Outputs: savedOutputs}
+	fileData, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(labelsFile, fileData, 0o644)
+	return os.WriteFile(settingsFile, fileData, 0o644)
 }
 
 // =============================
