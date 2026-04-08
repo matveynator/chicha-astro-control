@@ -313,7 +313,7 @@ func buildInitialState(savedLabels map[string]string, savedOutputs map[int]saved
 		labelKey := "input-" + strconv.Itoa(channelIndex)
 		label := strings.TrimSpace(savedLabels[labelKey])
 		if label == "" {
-			label = fmt.Sprintf("DI %d", channelIndex)
+			label = fmt.Sprintf("DI%d", channelIndex)
 		}
 
 		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Hz: "0.00 Hz", Label: label})
@@ -324,7 +324,7 @@ func buildInitialState(savedLabels map[string]string, savedOutputs map[int]saved
 		labelKey := "output-" + strconv.Itoa(channelIndex)
 		label := strings.TrimSpace(savedLabels[labelKey])
 		if label == "" {
-			label = fmt.Sprintf("DO %d", channelIndex+10)
+			label = fmt.Sprintf("DO%d", channelIndex+10)
 		}
 
 		initialPower := "off"

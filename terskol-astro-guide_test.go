@@ -61,18 +61,18 @@ func TestParseInputVoltageAndSignalFallsBackToDigitalMappingForNonNumericPayload
 func TestBuildInitialStateUsesPhysicalPinLabelsByDefault(t *testing.T) {
 	state := buildInitialState(map[string]string{}, map[int]savedOutputState{})
 
-	if state.Inputs[0].Label != "DI 1" || state.Inputs[7].Label != "DI 8" {
+	if state.Inputs[0].Label != "DI1" || state.Inputs[7].Label != "DI8" {
 		t.Fatalf("unexpected default DI labels: first=%q last=%q", state.Inputs[0].Label, state.Inputs[7].Label)
 	}
 
-	if state.Outputs[0].Label != "DO 11" || state.Outputs[7].Label != "DO 18" {
+	if state.Outputs[0].Label != "DO11" || state.Outputs[7].Label != "DO18" {
 		t.Fatalf("unexpected default DO labels: first=%q last=%q", state.Outputs[0].Label, state.Outputs[7].Label)
 	}
 }
 
 func TestApplyOutputPowerKeepsPWMValueWhenDisabled(t *testing.T) {
 	initialState := appState{
-		Outputs: []outputState{{Channel: 1, Power: "on", PWM: 37, Label: "DO 11"}},
+		Outputs: []outputState{{Channel: 1, Power: "on", PWM: 37, Label: "DO11"}},
 	}
 
 	nextState, err := applyOutputPower(initialState, 1, "off")

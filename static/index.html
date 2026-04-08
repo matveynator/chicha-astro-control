@@ -19,12 +19,12 @@
 
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Inter, Segoe UI, Arial, sans-serif; background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), url("/zeiss2000.jpg") center / cover fixed no-repeat, var(--background); color: var(--text); }
-    main { max-width: min(1480px, 100%); margin: 0 auto; padding: clamp(6px, 0.8vw, 10px); height: 100dvh; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+    main { max-width: min(1480px, 100%); margin: 0 auto; padding: clamp(6px, 0.8vw, 10px); display: flex; flex-direction: column; gap: 6px; }
     #error-text { min-height: 16px; color: #fca5a5; font-size: clamp(10px, 0.85vw, 12px); margin: 0; }
-    .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 12px); min-height: 0; flex: 1; }
-    .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; min-height: 0; }
+    .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
+    .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; }
     .panel h2 { margin: 0 0 8px; font-size: clamp(11px, 1vw, 15px); }
-    .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; overflow: auto; min-height: 0; }
+    .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
     .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 5px; display: flex; flex-direction: column; gap: 4px; background: rgba(9, 14, 28, var(--ui-alpha)); }
     .io-buttons { display: flex; gap: 6px; }
     button { border: 1px solid transparent; border-radius: 8px; height: clamp(24px, 2vw, 32px); font-size: clamp(11px, 0.9vw, 13px); color: white; cursor: pointer; background: rgba(51, 65, 85, var(--ui-alpha)); }
@@ -223,7 +223,7 @@
       const inputState = applicationModel.inputsByChannel[inputChannel];
       const inputLabelDraft = applicationModel.editingInputLabelsByChannel[inputChannel];
       const isEditingInputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingInputLabelsByChannel, inputChannel);
-      const inputPinNumber = inputChannel;
+      const inputPinCode = "DI" + String(inputChannel);
 
       const inputCardElement = document.createElement("article");
       inputCardElement.className = "channel-card";
@@ -279,7 +279,7 @@
 
         const inputPortTitleElement = document.createElement("div");
         inputPortTitleElement.className = "port-title";
-        inputPortTitleElement.textContent = "ПИН " + String(inputPinNumber);
+        inputPortTitleElement.textContent = inputPinCode;
         inputDisplayElement.appendChild(inputPortTitleElement);
       }
 
@@ -318,7 +318,7 @@
 
       const isEditingOutputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, outputChannel);
       const outputDraftLabel = isEditingOutputLabel ? applicationModel.editingOutputLabelsByChannel[outputChannel] : outputState.label;
-      const outputPinNumber = outputChannel + 10;
+      const outputPinCode = "DO" + String(outputChannel + 10);
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -370,7 +370,7 @@
 
         const outputPortTitleElement = document.createElement("div");
         outputPortTitleElement.className = "port-title";
-        outputPortTitleElement.textContent = "ПИН " + String(outputPinNumber);
+        outputPortTitleElement.textContent = outputPinCode;
         outputDisplayElement.appendChild(outputPortTitleElement);
       }
 
