@@ -4,6 +4,7 @@ Desktop-приложение на WebView для управления DIO на V
 
 ## Что есть
 - 8 входов DI (DI0..DI7), read-only индикация сигнала.
+- Для DI показывается текущее напряжение на экране канала (`0.0V` или значение `-input-on-voltage` при активном сигнале).
 - 8 выходов DO (DO0..DO7), управление ON/OFF.
 - Для каждого выхода есть PWM-крутилка 0..100% (как командный duty-level в UI).
 - Переименование каналов через кнопку-карандаш и кнопку «Сохранить».
@@ -25,6 +26,7 @@ go run terskol-astro-guide.go
 - `-dio-windows-input-path-template` Windows путь-шаблон DI (по умолчанию `C:\Vecow\ECX1K\di%d.value`)
 - `-dio-windows-output-path-template` Windows путь-шаблон DO (по умолчанию `C:\Vecow\ECX1K\do%d.value`)
 - `-labels-file` файл подписей (по умолчанию `dio-labels.json`)
+- `-input-on-voltage` отображаемое значение напряжения при активном DI (по умолчанию `24.0V`)
 
 ## API
 - `GET /api/state`

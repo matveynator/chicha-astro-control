@@ -39,6 +39,7 @@ var (
 	dioWindowsOutputPathFlag   = flag.String("dio-windows-output-path-template", `C:\Vecow\ECX1K\do%d.value`, "Windows DIO output file path template")
 	dioWindowsInputPathFlag    = flag.String("dio-windows-input-path-template", `C:\Vecow\ECX1K\di%d.value`, "Windows DIO input file path template")
 	labelsFileFlag             = flag.String("labels-file", "dio-labels.json", "path to labels file")
+	inputOnVoltageFlag         = flag.String("input-on-voltage", "24.0V", "voltage text shown for active DI signal")
 )
 
 const (
@@ -54,6 +55,7 @@ const (
 type inputState struct {
 	Channel int    `json:"channel"`
 	Signal  string `json:"signal"`
+	Voltage string `json:"voltage"`
 	Label   string `json:"label"`
 }
 
@@ -90,6 +92,10 @@ type ioPaths struct {
 	outputTemplate string
 }
 
+type runtimeConfig struct {
+	inputOnVoltage string
+}
+
 type stateCommand struct {
 	kind    string
 	channel int
@@ -118,7 +124,12 @@ func main() {
 	}
 
 	stateCommands := make(chan stateCommand)
-	go runStateOwner(stateCommands, resolvedIOPaths, *labelsFileFlag)
+	go runStateOwner(
+		stateCommands,
+		resolvedIOPaths,
+		runtimeConfig{inputOnVoltage: *inputOnVoltageFlag},
+		*labelsFileFlag,
+	)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
 	http.HandleFunc("/api/output/power", handleSetOutputPower(stateCommands))
@@ -200,14 +211,14 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, labelsFile string) {
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string) {
 	state := buildInitialState(loadLabels(labelsFile))
-	refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
+	refreshInputSignals(&state, resolvedIOPaths.inputTemplate, config.inputOnVoltage)
 
 	for command := range stateCommands {
 		switch command.kind {
 		case "get":
-			refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
+			refreshInputSignals(&state, resolvedIOPaths.inputTemplate, config.inputOnVoltage)
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_output_power":
@@ -256,7 +267,7 @@ func buildInitialState(savedLabels map[string]string) appState {
 			label = fmt.Sprintf("DI %d", channelIndex-1)
 		}
 
-		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Label: label})
+		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Label: label})
 	}
 
 	outputs := make([]outputState, 0, outputCount)
@@ -352,13 +363,17 @@ func cloneState(source appState) appState {
 	return appState{Inputs: copiedInputs, Outputs: copiedOutputs}
 }
 
-func refreshInputSignals(state *appState, inputPathTemplate string) {
+func refreshInputSignals(state *appState, inputPathTemplate string, inputOnVoltage string) {
 	for index := range state.Inputs {
 		nextSignal, err := readInputSignal(index+1, inputPathTemplate)
 		if err != nil {
 			continue
 		}
 		state.Inputs[index].Signal = nextSignal
+		state.Inputs[index].Voltage = "0.0V"
+		if nextSignal == "on" {
+			state.Inputs[index].Voltage = inputOnVoltage
+		}
 	}
 }
 

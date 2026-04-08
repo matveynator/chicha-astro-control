@@ -50,8 +50,90 @@
     .button-save.saved { background: var(--green); color: #06270f; }
     .button-save.unsaved { background: var(--blue); }
 
-    .input-signal { height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; background: #1e293b; color: var(--muted); }
-    .input-signal.on { color: #052d12; background: rgba(34, 197, 94, 0.9); font-weight: 700; }
+    .input-display {
+      position: relative;
+      border: 1px solid #28354f;
+      border-radius: 10px;
+      min-height: 94px;
+      background: linear-gradient(180deg, #0f172a, #101a31);
+      padding: 8px;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 6px;
+    }
+    .input-corner-indicator {
+      position: absolute;
+      left: 7px;
+      top: 7px;
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: #64748b;
+    }
+    .input-corner-indicator.on {
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.95);
+    }
+    .input-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-left: 14px;
+    }
+    .input-label-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+      max-width: 82%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .input-icon-button {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: #1e293b;
+      border: 1px solid #32415f;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .input-name-editor {
+      display: flex;
+      gap: 6px;
+      margin-left: 14px;
+    }
+    .input-name-editor input {
+      flex: 1;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid #32415f;
+      background: #0b1222;
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 13px;
+    }
+    .input-voltage-line {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      font-family: "Segoe UI", "Roboto Mono", monospace;
+      color: #dbe7ff;
+      min-height: 42px;
+    }
+    .input-voltage-line.on { color: #86efac; }
+    .input-status-line {
+      display: flex;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
   </style>
 </head>
 <body>
@@ -79,7 +161,8 @@
     outputsByChannel: {},
     pendingRequest: false,
     errorText: "",
-    unsavedLabels: {},
+    editingInputLabelsByChannel: {},
+    editingOutputLabelsByChannel: {},
     savedHighlightByLabelKey: {}
   };
 
@@ -99,34 +182,75 @@
 
     sortedInputChannels.forEach(function renderSingleInput(inputChannel) {
       const inputState = applicationModel.inputsByChannel[inputChannel];
-      const labelStateKey = "input-" + inputChannel;
-      const currentLabel = applicationModel.unsavedLabels[labelStateKey] || inputState.label;
+      const inputLabelDraft = applicationModel.editingInputLabelsByChannel[inputChannel];
+      const isEditingInputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingInputLabelsByChannel, inputChannel);
 
       const inputCardElement = document.createElement("article");
       inputCardElement.className = "channel-card";
 
-      const channelHeaderElement = document.createElement("div");
-      channelHeaderElement.className = "channel-header";
+      const inputDisplayElement = document.createElement("section");
+      inputDisplayElement.className = "input-display";
 
-      const channelTitleElement = document.createElement("span");
-      channelTitleElement.className = "channel-name";
-      channelTitleElement.textContent = "DI" + (inputChannel - 1);
+      const inputCornerIndicatorElement = document.createElement("span");
+      inputCornerIndicatorElement.className = inputState.signal === "on" ? "input-corner-indicator on" : "input-corner-indicator";
 
-      const lampElement = document.createElement("span");
-      lampElement.className = "lamp " + inputState.signal;
+      if (isEditingInputLabel) {
+        const inputNameEditorElement = document.createElement("div");
+        inputNameEditorElement.className = "input-name-editor";
 
-      channelHeaderElement.appendChild(channelTitleElement);
-      channelHeaderElement.appendChild(lampElement);
+        const inputNameFieldElement = document.createElement("input");
+        inputNameFieldElement.value = inputLabelDraft;
+        inputNameFieldElement.disabled = applicationModel.pendingRequest;
+        inputNameFieldElement.addEventListener("input", function handleInputLabelTyping() {
+          applicationModel.editingInputLabelsByChannel[inputChannel] = inputNameFieldElement.value;
+        });
 
-      const signalElement = document.createElement("div");
-      signalElement.className = inputState.signal === "on" ? "input-signal on" : "input-signal";
-      signalElement.textContent = inputState.signal === "on" ? "SIGNAL ON" : "signal off";
+        const saveInputNameButtonElement = document.createElement("button");
+        saveInputNameButtonElement.className = "input-icon-button";
+        saveInputNameButtonElement.textContent = "💾";
+        saveInputNameButtonElement.disabled = applicationModel.pendingRequest;
+        saveInputNameButtonElement.addEventListener("click", function handleInputLabelSave() {
+          void sendInputLabelToServer(inputChannel, inputNameFieldElement.value);
+        });
 
-      const labelRowElement = buildLabelControls("input", inputChannel, currentLabel, labelStateKey);
+        inputNameEditorElement.appendChild(inputNameFieldElement);
+        inputNameEditorElement.appendChild(saveInputNameButtonElement);
+        inputDisplayElement.appendChild(inputNameEditorElement);
+      } else {
+        const inputHeaderRowElement = document.createElement("div");
+        inputHeaderRowElement.className = "input-header-row";
 
-      inputCardElement.appendChild(channelHeaderElement);
-      inputCardElement.appendChild(signalElement);
-      inputCardElement.appendChild(labelRowElement);
+        const inputLabelTitleElement = document.createElement("div");
+        inputLabelTitleElement.className = "input-label-title";
+        inputLabelTitleElement.textContent = inputState.label;
+
+        const editInputNameButtonElement = document.createElement("button");
+        editInputNameButtonElement.className = "input-icon-button";
+        editInputNameButtonElement.textContent = "✎";
+        editInputNameButtonElement.disabled = applicationModel.pendingRequest;
+        editInputNameButtonElement.addEventListener("click", function handleInputLabelEditStart() {
+          applicationModel.editingInputLabelsByChannel[inputChannel] = inputState.label;
+          renderFromModel();
+        });
+
+        inputHeaderRowElement.appendChild(inputLabelTitleElement);
+        inputHeaderRowElement.appendChild(editInputNameButtonElement);
+        inputDisplayElement.appendChild(inputHeaderRowElement);
+      }
+
+      const inputVoltageLineElement = document.createElement("div");
+      inputVoltageLineElement.className = inputState.signal === "on" ? "input-voltage-line on" : "input-voltage-line";
+      inputVoltageLineElement.textContent = inputState.voltage;
+
+      const inputStatusLineElement = document.createElement("div");
+      inputStatusLineElement.className = "input-status-line";
+      inputStatusLineElement.textContent = inputState.signal === "on" ? "signal detected" : "no signal";
+
+      inputDisplayElement.appendChild(inputCornerIndicatorElement);
+      inputDisplayElement.appendChild(inputVoltageLineElement);
+      inputDisplayElement.appendChild(inputStatusLineElement);
+
+      inputCardElement.appendChild(inputDisplayElement);
       inputGridElement.appendChild(inputCardElement);
     });
   }
@@ -138,7 +262,7 @@
     sortedOutputChannels.forEach(function renderSingleOutput(outputChannel) {
       const outputState = applicationModel.outputsByChannel[outputChannel];
       const labelStateKey = "output-" + outputChannel;
-      const currentLabel = applicationModel.unsavedLabels[labelStateKey] || outputState.label;
+      const outputDraftLabel = applicationModel.editingOutputLabelsByChannel[outputChannel] || outputState.label;
 
       const outputCardElement = document.createElement("article");
       outputCardElement.className = "channel-card";
@@ -199,7 +323,7 @@
       pwmRowElement.appendChild(pwmSliderElement);
       pwmRowElement.appendChild(pwmValueElement);
 
-      const labelRowElement = buildLabelControls("output", outputChannel, currentLabel, labelStateKey);
+      const labelRowElement = buildOutputLabelControls(outputChannel, outputDraftLabel, labelStateKey);
 
       outputCardElement.appendChild(channelHeaderElement);
       outputCardElement.appendChild(buttonsRowElement);
@@ -209,17 +333,16 @@
     });
   }
 
-  function buildLabelControls(kind, channel, labelText, labelStateKey) {
+  function buildOutputLabelControls(channel, labelText, labelStateKey) {
     const labelRowElement = document.createElement("div");
     labelRowElement.className = "label-row";
 
     const labelInputElement = document.createElement("input");
     labelInputElement.value = labelText;
-    labelInputElement.disabled = !applicationModel.unsavedLabels.hasOwnProperty(labelStateKey);
+    labelInputElement.disabled = !Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, channel);
     labelInputElement.addEventListener("input", function handleLabelInputChange() {
-      applicationModel.unsavedLabels[labelStateKey] = labelInputElement.value;
+      applicationModel.editingOutputLabelsByChannel[channel] = labelInputElement.value;
       applicationModel.savedHighlightByLabelKey[labelStateKey] = false;
-      renderFromModel();
     });
 
     const editButtonElement = document.createElement("button");
@@ -227,19 +350,19 @@
     editButtonElement.textContent = "✎";
     editButtonElement.disabled = applicationModel.pendingRequest;
     editButtonElement.addEventListener("click", function handleEditStart() {
-      applicationModel.unsavedLabels[labelStateKey] = labelText;
+      applicationModel.editingOutputLabelsByChannel[channel] = labelText;
       renderFromModel();
     });
 
     const saveButtonElement = document.createElement("button");
-    const hasUnsavedLabel = applicationModel.unsavedLabels.hasOwnProperty(labelStateKey);
+    const hasUnsavedLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, channel);
     const isSavedLabel = applicationModel.savedHighlightByLabelKey[labelStateKey] === true;
     saveButtonElement.className = isSavedLabel ? "button-save saved" : (hasUnsavedLabel ? "button-save unsaved" : "button-save");
     saveButtonElement.textContent = "Сохранить";
     saveButtonElement.disabled = applicationModel.pendingRequest || !hasUnsavedLabel;
     saveButtonElement.addEventListener("click", function handleLabelSave() {
-      const nextLabel = applicationModel.unsavedLabels[labelStateKey];
-      void sendLabelToServer(kind, channel, nextLabel, labelStateKey);
+      const nextLabel = applicationModel.editingOutputLabelsByChannel[channel];
+      void sendOutputLabelToServer(channel, nextLabel, labelStateKey);
     });
 
     labelRowElement.appendChild(labelInputElement);
@@ -305,18 +428,34 @@
     });
   }
 
-  async function sendLabelToServer(kind, channel, nextLabel, labelStateKey) {
-    await runServerCommand(async function sendLabelCommand() {
+  async function sendInputLabelToServer(inputChannel, nextLabel) {
+    await runServerCommand(async function sendInputLabelCommand() {
       const labelResponse = await fetch("/api/label", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: kind, channel: channel, label: nextLabel })
+        body: JSON.stringify({ kind: "input", channel: inputChannel, label: nextLabel })
       });
       if (!labelResponse.ok) {
         throw new Error(await labelResponse.text());
       }
 
-      delete applicationModel.unsavedLabels[labelStateKey];
+      delete applicationModel.editingInputLabelsByChannel[inputChannel];
+      applyStateFromServer(await labelResponse.json());
+    });
+  }
+
+  async function sendOutputLabelToServer(channel, nextLabel, labelStateKey) {
+    await runServerCommand(async function sendLabelCommand() {
+      const labelResponse = await fetch("/api/label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "output", channel: channel, label: nextLabel })
+      });
+      if (!labelResponse.ok) {
+        throw new Error(await labelResponse.text());
+      }
+
+      delete applicationModel.editingOutputLabelsByChannel[channel];
       applicationModel.savedHighlightByLabelKey[labelStateKey] = true;
       applyStateFromServer(await labelResponse.json());
     });
