@@ -18,28 +18,20 @@ Pin mapping used in UI:
 - `DI1..DI8` → terminal block pins `1..8`
 - `DO1..DO8` → terminal block pins `11..18`
 
-## 2) Quick start
+
+## 2) Linux & MacOS:
 
 ```bash
-go run .
+go build -o /usr/local/bin/chicha-astro-control chicha-astro-control.go; chmod +x /usr/local/bin/chicha-astro-control; chicha-astro-control; 
 ```
 
-The app binds HTTP server to localhost, starting from port `7654`.  
-If the port is busy, it increments (`7655`, `7656`, ...) until a free port is found.
-
-## 3) Build
+## 3) Windows:
 
 ```bash
-go build -o chicha-astro-control .
+GOOS=windows GOARCH=amd64 go build -ldflags="-H windowsgui" -o chicha-astro-control.exe chicha-astro-control.go
 ```
 
-Windows example:
-
-```bash
-GOOS=windows GOARCH=amd64 go build -o chicha-astro-control.exe .
-```
-
-## 4) Runtime flags
+## 4) Optional runtime flags
 
 Only three flags are supported:
 
@@ -47,33 +39,12 @@ Only three flags are supported:
 - `-DO` — DO path template with `%d`
 - `-config` — path to JSON settings file
 
-Examples:
 
-```bash
-go run . -DI "/sys/class/gpio/gpio%d/value" -DO "/sys/class/gpio/gpio%d/value"
-```
-
-```bash
-go run . -config "./astro-settings.json"
-```
-
-If `-DI`/`-DO` are not provided, defaults depend on OS:
+## 5) If `-DI`/`-DO` are not provided, defaults depend on OS:
 
 - Linux: `/sys/class/gpio/gpio%d/value`
 - Windows: `C:\Vecow\ECX1K\di%d.value` and `C:\Vecow\ECX1K\do%d.value`
 - macOS: `/tmp/astro-control/di%d.value` and `/tmp/astro-control/do%d.value`
-
-## 5) HTTP API
-
-- `GET /api/state`
-- `POST /api/output/power`
-  - body: `{ "channel": 1, "power": "on" }`
-- `POST /api/output/pwm`
-  - body: `{ "channel": 1, "pwm": 60 }`
-- `POST /api/label`
-  - body: `{ "kind": "output", "channel": 1, "label": "Pump" }`
-- `POST /api/open/repository`
-  - opens GitHub URL in external browser
 
 ## 6) Hardware notes
 
