@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,47 +30,74 @@ import (
 var staticFiles embed.FS
 
 var (
-	portFlag                      = flag.Int("port", 8765, "web server port")
-	directoryFlag                 = flag.String("directory", ".", "directory to serve files from")
-	dioValuePathTemplateFlag      = flag.String("dio-value-path-template", "", "explicit DIO value file path template with %d placeholder")
-	dioLinuxValuePathTemplateFlag = flag.String("dio-linux-value-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO value file path template")
-	dioWindowsValuePathTemplate   = flag.String("dio-windows-value-path-template", `C:\Vecow\ECX1K\dio%d.value`, "Windows DIO value file path template")
-	labelsFileFlag                = flag.String("labels-file", "dio-labels.json", "path to labels file")
+	portFlag                   = flag.Int("port", 8765, "web server port")
+	directoryFlag              = flag.String("directory", ".", "directory to serve files from")
+	dioOutputPathTemplateFlag  = flag.String("dio-output-path-template", "", "explicit DIO output file path template with %d placeholder")
+	dioInputPathTemplateFlag   = flag.String("dio-input-path-template", "", "explicit DIO input file path template with %d placeholder")
+	dioLinuxOutputPathTemplate = flag.String("dio-linux-output-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO output file path template")
+	dioLinuxInputPathTemplate  = flag.String("dio-linux-input-path-template", "/sys/class/gpio/gpio%d/value", "Linux DIO input file path template")
+	dioWindowsOutputPathFlag   = flag.String("dio-windows-output-path-template", `C:\Vecow\ECX1K\do%d.value`, "Windows DIO output file path template")
+	dioWindowsInputPathFlag    = flag.String("dio-windows-input-path-template", `C:\Vecow\ECX1K\di%d.value`, "Windows DIO input file path template")
+	labelsFileFlag             = flag.String("labels-file", "dio-labels.json", "path to labels file")
 )
 
-const portCount = 8
-const serverStartupTimeout = 45 * time.Second
+const (
+	inputCount           = 8
+	outputCount          = 8
+	serverStartupTimeout = 45 * time.Second
+)
 
 // =============================
 // Domain model.
 // =============================
 
-type portState struct {
-	Port  int    `json:"port"`
-	Power string `json:"power"`
-	Label string `json:"label"`
+type inputState struct {
+	Channel int    `json:"channel"`
+	Signal  string `json:"signal"`
+	Label   string `json:"label"`
+}
+
+type outputState struct {
+	Channel int    `json:"channel"`
+	Power   string `json:"power"`
+	PWM     int    `json:"pwm"`
+	Label   string `json:"label"`
 }
 
 type appState struct {
-	Ports []portState `json:"ports"`
+	Inputs  []inputState  `json:"inputs"`
+	Outputs []outputState `json:"outputs"`
 }
 
-type setPowerRequest struct {
-	Port  int    `json:"port"`
-	Power string `json:"power"`
+type setOutputPowerRequest struct {
+	Channel int    `json:"channel"`
+	Power   string `json:"power"`
+}
+
+type setOutputPWMRequest struct {
+	Channel int `json:"channel"`
+	PWM     int `json:"pwm"`
 }
 
 type setLabelRequest struct {
-	Port  int    `json:"port"`
-	Label string `json:"label"`
+	Kind    string `json:"kind"`
+	Channel int    `json:"channel"`
+	Label   string `json:"label"`
+}
+
+type ioPaths struct {
+	inputTemplate  string
+	outputTemplate string
 }
 
 type stateCommand struct {
-	kind  string
-	port  int
-	power string
-	label string
-	reply chan stateReply
+	kind    string
+	channel int
+	power   string
+	pwm     int
+	label   string
+	target  string
+	reply   chan stateReply
 }
 
 type stateReply struct {
@@ -84,17 +112,17 @@ type stateReply struct {
 func main() {
 	flag.Parse()
 
-	dioValuePathTemplate := resolveDIOValuePathTemplate(
-		*dioValuePathTemplateFlag,
-		*dioLinuxValuePathTemplateFlag,
-		*dioWindowsValuePathTemplate,
-	)
+	resolvedIOPaths := ioPaths{
+		inputTemplate:  resolvePathTemplate(*dioInputPathTemplateFlag, *dioLinuxInputPathTemplate, *dioWindowsInputPathFlag),
+		outputTemplate: resolvePathTemplate(*dioOutputPathTemplateFlag, *dioLinuxOutputPathTemplate, *dioWindowsOutputPathFlag),
+	}
 
 	stateCommands := make(chan stateCommand)
-	go runStateOwner(stateCommands, dioValuePathTemplate, *labelsFileFlag)
+	go runStateOwner(stateCommands, resolvedIOPaths, *labelsFileFlag)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
-	http.HandleFunc("/api/power", handleSetPower(stateCommands))
+	http.HandleFunc("/api/output/power", handleSetOutputPower(stateCommands))
+	http.HandleFunc("/api/output/pwm", handleSetOutputPWM(stateCommands))
 	http.HandleFunc("/api/label", handleSetLabel(stateCommands))
 	http.HandleFunc("/", handleRequest)
 
@@ -122,7 +150,7 @@ func main() {
 	defer window.Destroy()
 
 	window.SetTitle("DIO/DO Control · ECX-1000-2G")
-	window.SetSize(980, 760, webview.HintNone)
+	window.SetSize(1120, 760, webview.HintNone)
 	window.Navigate("http://" + address)
 
 	log.Printf("webview: window started")
@@ -130,7 +158,7 @@ func main() {
 	log.Printf("shutdown: webview stopped")
 }
 
-func resolveDIOValuePathTemplate(explicitTemplate string, linuxTemplate string, windowsTemplate string) string {
+func resolvePathTemplate(explicitTemplate string, linuxTemplate string, windowsTemplate string) string {
 	trimmedExplicitTemplate := strings.TrimSpace(explicitTemplate)
 	if trimmedExplicitTemplate != "" {
 		log.Printf("dio: using explicit template=%s", trimmedExplicitTemplate)
@@ -138,11 +166,9 @@ func resolveDIOValuePathTemplate(explicitTemplate string, linuxTemplate string, 
 	}
 
 	if runtime.GOOS == "windows" {
-		log.Printf("dio: detected windows runtime, template=%s", windowsTemplate)
 		return windowsTemplate
 	}
 
-	log.Printf("dio: detected %s runtime, template=%s", runtime.GOOS, linuxTemplate)
 	return linuxTemplate
 }
 
@@ -174,35 +200,45 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, dioValuePathTemplate string, labelsFile string) {
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, labelsFile string) {
 	state := buildInitialState(loadLabels(labelsFile))
-	log.Printf("state: owner started with %d ports", len(state.Ports))
+	refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
 
 	for command := range stateCommands {
 		switch command.kind {
 		case "get":
+			refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
 			command.reply <- stateReply{state: cloneState(state)}
 
-		case "set_power":
-			resultState, err := applyPower(state, command.port, command.power, dioValuePathTemplate)
+		case "set_output_power":
+			nextState, err := applyOutputPower(state, command.channel, command.power, resolvedIOPaths.outputTemplate)
 			if err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
-			state = resultState
+			state = nextState
+			command.reply <- stateReply{state: cloneState(state)}
+
+		case "set_output_pwm":
+			nextState, err := applyOutputPWM(state, command.channel, command.pwm, resolvedIOPaths.outputTemplate)
+			if err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			state = nextState
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_label":
-			resultState, err := applyLabel(state, command.port, command.label)
+			nextState, err := applyLabel(state, command.target, command.channel, command.label)
 			if err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
-			if err := saveLabels(labelsFile, resultState); err != nil {
+			if err := saveLabels(labelsFile, nextState); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
-			state = resultState
+			state = nextState
 			command.reply <- stateReply{state: cloneState(state)}
 
 		default:
@@ -211,94 +247,170 @@ func runStateOwner(stateCommands <-chan stateCommand, dioValuePathTemplate strin
 	}
 }
 
-func buildInitialState(savedLabels map[int]string) appState {
-	ports := make([]portState, 0, portCount)
-	for portIndex := 1; portIndex <= portCount; portIndex++ {
-		label := strings.TrimSpace(savedLabels[portIndex])
+func buildInitialState(savedLabels map[string]string) appState {
+	inputs := make([]inputState, 0, inputCount)
+	for channelIndex := 1; channelIndex <= inputCount; channelIndex++ {
+		labelKey := "input-" + strconv.Itoa(channelIndex)
+		label := strings.TrimSpace(savedLabels[labelKey])
 		if label == "" {
-			label = fmt.Sprintf("DIO %d", portIndex)
+			label = fmt.Sprintf("DI %d", channelIndex-1)
 		}
-		ports = append(ports, portState{
-			Port:  portIndex,
-			Power: "off",
-			Label: label,
-		})
+
+		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Label: label})
 	}
-	return appState{Ports: ports}
+
+	outputs := make([]outputState, 0, outputCount)
+	for channelIndex := 1; channelIndex <= outputCount; channelIndex++ {
+		labelKey := "output-" + strconv.Itoa(channelIndex)
+		label := strings.TrimSpace(savedLabels[labelKey])
+		if label == "" {
+			label = fmt.Sprintf("DO %d", channelIndex-1)
+		}
+
+		outputs = append(outputs, outputState{Channel: channelIndex, Power: "off", PWM: 0, Label: label})
+	}
+
+	return appState{Inputs: inputs, Outputs: outputs}
 }
 
-func applyPower(state appState, port int, nextPower string, dioValuePathTemplate string) (appState, error) {
-	if port < 1 || port > portCount {
-		return state, errors.New("invalid port")
+func applyOutputPower(state appState, channel int, nextPower string, outputPathTemplate string) (appState, error) {
+	if channel < 1 || channel > outputCount {
+		return state, errors.New("invalid output channel")
 	}
 	if nextPower != "on" && nextPower != "off" {
 		return state, errors.New("power must be on or off")
 	}
 
-	if err := writeDIOPower(port, nextPower, dioValuePathTemplate); err != nil {
+	if err := writeOutputPower(channel, nextPower, outputPathTemplate); err != nil {
 		return state, err
 	}
 
 	nextState := cloneState(state)
-	nextState.Ports[port-1].Power = nextPower
-	log.Printf("dio: port=%d power=%s", port, nextPower)
+	nextState.Outputs[channel-1].Power = nextPower
+	if nextPower == "off" {
+		nextState.Outputs[channel-1].PWM = 0
+	}
+
 	return nextState, nil
 }
 
-func applyLabel(state appState, port int, nextLabel string) (appState, error) {
-	if port < 1 || port > portCount {
-		return state, errors.New("invalid port")
+func applyOutputPWM(state appState, channel int, nextPWM int, outputPathTemplate string) (appState, error) {
+	if channel < 1 || channel > outputCount {
+		return state, errors.New("invalid output channel")
+	}
+	if nextPWM < 0 || nextPWM > 100 {
+		return state, errors.New("pwm must be between 0 and 100")
 	}
 
+	nextPower := "off"
+	if nextPWM > 0 {
+		nextPower = "on"
+	}
+
+	if err := writeOutputPower(channel, nextPower, outputPathTemplate); err != nil {
+		return state, err
+	}
+
+	nextState := cloneState(state)
+	nextState.Outputs[channel-1].PWM = nextPWM
+	nextState.Outputs[channel-1].Power = nextPower
+	return nextState, nil
+}
+
+func applyLabel(state appState, target string, channel int, nextLabel string) (appState, error) {
 	sanitizedLabel := strings.TrimSpace(nextLabel)
 	if sanitizedLabel == "" {
 		return state, errors.New("label is required")
 	}
 
 	nextState := cloneState(state)
-	nextState.Ports[port-1].Label = sanitizedLabel
-	log.Printf("dio: port=%d label=%s", port, sanitizedLabel)
+	switch target {
+	case "input":
+		if channel < 1 || channel > inputCount {
+			return state, errors.New("invalid input channel")
+		}
+		nextState.Inputs[channel-1].Label = sanitizedLabel
+	case "output":
+		if channel < 1 || channel > outputCount {
+			return state, errors.New("invalid output channel")
+		}
+		nextState.Outputs[channel-1].Label = sanitizedLabel
+	default:
+		return state, errors.New("target must be input or output")
+	}
+
 	return nextState, nil
 }
 
 func cloneState(source appState) appState {
-	copiedPorts := make([]portState, len(source.Ports))
-	copy(copiedPorts, source.Ports)
-	return appState{Ports: copiedPorts}
+	copiedInputs := make([]inputState, len(source.Inputs))
+	copy(copiedInputs, source.Inputs)
+
+	copiedOutputs := make([]outputState, len(source.Outputs))
+	copy(copiedOutputs, source.Outputs)
+
+	return appState{Inputs: copiedInputs, Outputs: copiedOutputs}
 }
 
-func writeDIOPower(port int, nextPower string, dioValuePathTemplate string) error {
+func refreshInputSignals(state *appState, inputPathTemplate string) {
+	for index := range state.Inputs {
+		nextSignal, err := readInputSignal(index+1, inputPathTemplate)
+		if err != nil {
+			continue
+		}
+		state.Inputs[index].Signal = nextSignal
+	}
+}
+
+func writeOutputPower(channel int, nextPower string, outputPathTemplate string) error {
 	nextValue := "0"
 	if nextPower == "on" {
 		nextValue = "1"
 	}
 
-	gpioPath := fmt.Sprintf(dioValuePathTemplate, port)
-	if err := os.WriteFile(gpioPath, []byte(nextValue), 0o644); err != nil {
-		return fmt.Errorf("write DIO path %q: %w", gpioPath, err)
+	outputPath := fmt.Sprintf(outputPathTemplate, channel)
+	if err := os.WriteFile(outputPath, []byte(nextValue), 0o644); err != nil {
+		return fmt.Errorf("write DIO output %q: %w", outputPath, err)
 	}
 
 	return nil
 }
 
-func loadLabels(labelsFile string) map[int]string {
-	fileData, err := os.ReadFile(labelsFile)
+func readInputSignal(channel int, inputPathTemplate string) (string, error) {
+	inputPath := fmt.Sprintf(inputPathTemplate, channel)
+	rawSignal, err := os.ReadFile(inputPath)
 	if err != nil {
-		return map[int]string{}
+		return "off", err
 	}
 
-	var labels map[int]string
+	if strings.TrimSpace(string(rawSignal)) == "1" {
+		return "on", nil
+	}
+
+	return "off", nil
+}
+
+func loadLabels(labelsFile string) map[string]string {
+	fileData, err := os.ReadFile(labelsFile)
+	if err != nil {
+		return map[string]string{}
+	}
+
+	var labels map[string]string
 	if err := json.Unmarshal(fileData, &labels); err != nil {
-		return map[int]string{}
+		return map[string]string{}
 	}
 
 	return labels
 }
 
 func saveLabels(labelsFile string, state appState) error {
-	labels := map[int]string{}
-	for _, singlePortState := range state.Ports {
-		labels[singlePortState.Port] = singlePortState.Label
+	labels := map[string]string{}
+	for _, singleInput := range state.Inputs {
+		labels["input-"+strconv.Itoa(singleInput.Channel)] = singleInput.Label
+	}
+	for _, singleOutput := range state.Outputs {
+		labels["output-"+strconv.Itoa(singleOutput.Channel)] = singleOutput.Label
 	}
 
 	fileData, err := json.MarshalIndent(labels, "", "  ")
@@ -315,13 +427,8 @@ func saveLabels(labelsFile string, state appState) error {
 
 func handleGetState(stateCommands chan<- stateCommand) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		log.Printf("http: %s %s", request.Method, request.URL.Path)
-
 		reply := make(chan stateReply, 1)
-		stateCommands <- stateCommand{
-			kind:  "get",
-			reply: reply,
-		}
+		stateCommands <- stateCommand{kind: "get", reply: reply}
 
 		result := <-reply
 		if result.err != nil {
@@ -333,28 +440,47 @@ func handleGetState(stateCommands chan<- stateCommand) http.HandlerFunc {
 	}
 }
 
-func handleSetPower(stateCommands chan<- stateCommand) http.HandlerFunc {
+func handleSetOutputPower(stateCommands chan<- stateCommand) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		log.Printf("http: %s %s", request.Method, request.URL.Path)
-
 		if request.Method != http.MethodPost {
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		var apiRequest setPowerRequest
+		var apiRequest setOutputPowerRequest
 		if err := json.NewDecoder(request.Body).Decode(&apiRequest); err != nil {
 			http.Error(writer, "invalid json", http.StatusBadRequest)
 			return
 		}
 
 		reply := make(chan stateReply, 1)
-		stateCommands <- stateCommand{
-			kind:  "set_power",
-			port:  apiRequest.Port,
-			power: apiRequest.Power,
-			reply: reply,
+		stateCommands <- stateCommand{kind: "set_output_power", channel: apiRequest.Channel, power: apiRequest.Power, reply: reply}
+
+		result := <-reply
+		if result.err != nil {
+			http.Error(writer, result.err.Error(), http.StatusBadRequest)
+			return
 		}
+
+		writeJSON(writer, result.state)
+	}
+}
+
+func handleSetOutputPWM(stateCommands chan<- stateCommand) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var apiRequest setOutputPWMRequest
+		if err := json.NewDecoder(request.Body).Decode(&apiRequest); err != nil {
+			http.Error(writer, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		reply := make(chan stateReply, 1)
+		stateCommands <- stateCommand{kind: "set_output_pwm", channel: apiRequest.Channel, pwm: apiRequest.PWM, reply: reply}
 
 		result := <-reply
 		if result.err != nil {
@@ -368,8 +494,6 @@ func handleSetPower(stateCommands chan<- stateCommand) http.HandlerFunc {
 
 func handleSetLabel(stateCommands chan<- stateCommand) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		log.Printf("http: %s %s", request.Method, request.URL.Path)
-
 		if request.Method != http.MethodPost {
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -382,12 +506,7 @@ func handleSetLabel(stateCommands chan<- stateCommand) http.HandlerFunc {
 		}
 
 		reply := make(chan stateReply, 1)
-		stateCommands <- stateCommand{
-			kind:  "set_label",
-			port:  apiRequest.Port,
-			label: apiRequest.Label,
-			reply: reply,
-		}
+		stateCommands <- stateCommand{kind: "set_label", target: apiRequest.Kind, channel: apiRequest.Channel, label: apiRequest.Label, reply: reply}
 
 		result := <-reply
 		if result.err != nil {
@@ -414,14 +533,12 @@ func handleRequest(writer http.ResponseWriter, request *http.Request) {
 		requestedFile = "index.html"
 	}
 
-	// 1. Try external file from directory flag.
 	fullPathToFile := filepath.Join(*directoryFlag, filepath.FromSlash(requestedFile))
 	if fileExists(fullPathToFile) {
 		http.ServeFile(writer, request, fullPathToFile)
 		return
 	}
 
-	// 2. Try embedded file from static/*.
 	if serveEmbeddedFile(writer, requestedFile) {
 		return
 	}
