@@ -39,6 +39,7 @@ var (
 	dioWindowsOutputPathFlag   = flag.String("dio-windows-output-path-template", `C:\Vecow\ECX1K\do%d.value`, "Windows DIO output file path template")
 	dioWindowsInputPathFlag    = flag.String("dio-windows-input-path-template", `C:\Vecow\ECX1K\di%d.value`, "Windows DIO input file path template")
 	labelsFileFlag             = flag.String("labels-file", "dio-labels.json", "path to labels file")
+	outputsFileFlag            = flag.String("outputs-file", "dio-outputs.json", "path to output power and pwm state file")
 	inputOnVoltageFlag         = flag.Float64("input-on-voltage", 24.0, "voltage value used when DI source is digital and signal is active")
 	inputOffVoltageFlag        = flag.Float64("input-off-voltage", 0.0, "voltage value used when DI source is digital and signal is inactive")
 	inputThresholdVoltageFlag  = flag.Float64("input-threshold-voltage", 2.0, "threshold used to map numeric DI voltage to on/off signal")
@@ -102,6 +103,12 @@ type runtimeConfig struct {
 	inputThresholdVoltage float64
 }
 
+type savedOutputState struct {
+	Channel int    `json:"channel"`
+	Power   string `json:"power"`
+	PWM     int    `json:"pwm"`
+}
+
 type inputMetric struct {
 	lastSignal string
 	lastEdgeAt time.Time
@@ -155,6 +162,7 @@ func main() {
 			inputThresholdVoltage: *inputThresholdVoltageFlag,
 		},
 		*labelsFileFlag,
+		*outputsFileFlag,
 		outputPWMController,
 	)
 
@@ -187,7 +195,7 @@ func main() {
 	}
 	defer window.Destroy()
 
-	window.SetTitle("DIO/DO Control · ECX-1000-2G")
+	window.SetTitle("Обсерватория Терскол: управление GPIO/DIO портами ECX-1000")
 	window.SetSize(1120, 760, webview.HintNone)
 	window.Navigate("http://" + address)
 
@@ -238,8 +246,11 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string, outputPWMController *pwmController) {
-	state := buildInitialState(loadLabels(labelsFile))
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string, outputsFile string, outputPWMController *pwmController) {
+	state := buildInitialState(loadLabels(labelsFile), loadOutputs(outputsFile))
+	for _, configuredOutput := range state.Outputs {
+		outputPWMController.Apply(configuredOutput)
+	}
 	inputMetrics := buildInitialInputMetrics()
 	refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
 
@@ -255,6 +266,10 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
+			if err := saveOutputs(outputsFile, nextState); err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
 			outputPWMController.Apply(nextState.Outputs[command.channel-1])
 			state = nextState
 			command.reply <- stateReply{state: cloneState(state)}
@@ -262,6 +277,10 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 		case "set_output_pwm":
 			nextState, err := applyOutputPWM(state, command.channel, command.pwm)
 			if err != nil {
+				command.reply <- stateReply{state: cloneState(state), err: err}
+				continue
+			}
+			if err := saveOutputs(outputsFile, nextState); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
@@ -288,13 +307,13 @@ func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, c
 	}
 }
 
-func buildInitialState(savedLabels map[string]string) appState {
+func buildInitialState(savedLabels map[string]string, savedOutputs map[int]savedOutputState) appState {
 	inputs := make([]inputState, 0, inputCount)
 	for channelIndex := 1; channelIndex <= inputCount; channelIndex++ {
 		labelKey := "input-" + strconv.Itoa(channelIndex)
 		label := strings.TrimSpace(savedLabels[labelKey])
 		if label == "" {
-			label = fmt.Sprintf("DI %d", channelIndex-1)
+			label = fmt.Sprintf("DI %d", channelIndex)
 		}
 
 		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Hz: "0.00 Hz", Label: label})
@@ -305,10 +324,21 @@ func buildInitialState(savedLabels map[string]string) appState {
 		labelKey := "output-" + strconv.Itoa(channelIndex)
 		label := strings.TrimSpace(savedLabels[labelKey])
 		if label == "" {
-			label = fmt.Sprintf("DO %d", channelIndex-1)
+			label = fmt.Sprintf("DO %d", channelIndex+10)
 		}
 
-		outputs = append(outputs, outputState{Channel: channelIndex, Power: "off", PWM: 0, Label: label})
+		initialPower := "off"
+		initialPWM := 0
+		if savedOutput, exists := savedOutputs[channelIndex]; exists {
+			if savedOutput.Power == "on" || savedOutput.Power == "off" {
+				initialPower = savedOutput.Power
+			}
+			if savedOutput.PWM >= 0 && savedOutput.PWM <= 100 {
+				initialPWM = savedOutput.PWM
+			}
+		}
+
+		outputs = append(outputs, outputState{Channel: channelIndex, Power: initialPower, PWM: initialPWM, Label: label})
 	}
 
 	return appState{Inputs: inputs, Outputs: outputs}
@@ -326,9 +356,6 @@ func applyOutputPower(state appState, channel int, nextPower string) (appState, 
 	nextState.Outputs[channel-1].Power = nextPower
 	if nextPower == "on" && nextState.Outputs[channel-1].PWM == 0 {
 		nextState.Outputs[channel-1].PWM = 100
-	}
-	if nextPower == "off" {
-		nextState.Outputs[channel-1].PWM = 0
 	}
 
 	return nextState, nil
@@ -606,6 +633,25 @@ func loadLabels(labelsFile string) map[string]string {
 	return labels
 }
 
+func loadOutputs(outputsFile string) map[int]savedOutputState {
+	fileData, err := os.ReadFile(outputsFile)
+	if err != nil {
+		return map[int]savedOutputState{}
+	}
+
+	var savedOutputs []savedOutputState
+	if err := json.Unmarshal(fileData, &savedOutputs); err != nil {
+		return map[int]savedOutputState{}
+	}
+
+	outputsByChannel := make(map[int]savedOutputState, len(savedOutputs))
+	for _, singleOutput := range savedOutputs {
+		outputsByChannel[singleOutput.Channel] = singleOutput
+	}
+
+	return outputsByChannel
+}
+
 func saveLabels(labelsFile string, state appState) error {
 	labels := map[string]string{}
 	for _, singleInput := range state.Inputs {
@@ -621,6 +667,24 @@ func saveLabels(labelsFile string, state appState) error {
 	}
 
 	return os.WriteFile(labelsFile, fileData, 0o644)
+}
+
+func saveOutputs(outputsFile string, state appState) error {
+	savedOutputs := make([]savedOutputState, 0, len(state.Outputs))
+	for _, singleOutput := range state.Outputs {
+		savedOutputs = append(savedOutputs, savedOutputState{
+			Channel: singleOutput.Channel,
+			Power:   singleOutput.Power,
+			PWM:     singleOutput.PWM,
+		})
+	}
+
+	fileData, err := json.MarshalIndent(savedOutputs, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(outputsFile, fileData, 0o644)
 }
 
 // =============================
