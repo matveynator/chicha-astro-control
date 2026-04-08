@@ -486,12 +486,18 @@ func (controller *pwmController) Apply(output outputState) {
 
 	nextCommand := pwmChannelCommand{power: output.Power, pwm: output.PWM}
 	channelCommandQueue := controller.channelCommands[output.Channel-1]
-	select {
-	case channelCommandQueue <- nextCommand:
-		return
-	default:
-		<-channelCommandQueue
-		channelCommandQueue <- nextCommand
+	for attemptIndex := 0; attemptIndex < 3; attemptIndex++ {
+		select {
+		case channelCommandQueue <- nextCommand:
+			return
+		default:
+		}
+
+		// Drop the stale queued command only when one is currently buffered.
+		select {
+		case <-channelCommandQueue:
+		default:
+		}
 	}
 }
 
