@@ -3,181 +3,512 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DIO/DO Control</title>
+  <title>ECX-1000-2G DIO Panel</title>
   <style>
-    body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
-    main { max-width: 980px; margin: 20px auto; padding: 0 12px 20px; }
-    h1 { margin-bottom: 10px; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .card { background: #1e293b; border-radius: 12px; padding: 14px; border: 1px solid #334155; box-shadow: 0 8px 20px rgba(0,0,0,0.25); }
-    .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
-    .lamp { width: 14px; height: 14px; border-radius: 999px; background: #64748b; }
-    .lamp.on { background: #16a34a; box-shadow: 0 0 10px rgba(22, 163, 74, 0.6); }
-    .lamp.off { background: #9ca3af; }
-    .button-row { display: flex; gap: 8px; margin-bottom: 10px; }
-    button { border: 0; border-radius: 8px; padding: 8px 10px; color: white; cursor: pointer; }
-    .on-button { background: #166534; }
-    .on-button.active { background: #22c55e; box-shadow: 0 0 14px rgba(34, 197, 94, 0.75); }
-    .off-button { background: #475569; }
-    .off-button.active { background: #94a3b8; color: #0f172a; }
-    .save-button { background: #2563eb; width: 100%; }
-    input { width: 100%; box-sizing: border-box; border: 1px solid #334155; border-radius: 8px; padding: 8px; margin-bottom: 8px; background: #0f172a; color: #e2e8f0; }
-    #error-text { min-height: 20px; color: #fca5a5; }
+    :root {
+      --background: #0b1020;
+      --card: #121a2f;
+      --card-border: #1f2a44;
+      --text: #e7edf8;
+      --muted: #95a2bf;
+      --green: #22c55e;
+      --gray: #64748b;
+      --blue: #3b82f6;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, Segoe UI, Arial, sans-serif; background: var(--background); color: var(--text); }
+    main { max-width: 1200px; margin: 0 auto; padding: 14px; height: 100vh; overflow: hidden; display: flex; flex-direction: column; gap: 10px; }
+    h1 { font-size: 20px; margin: 0; }
+    .subtitle { color: var(--muted); margin: 0; font-size: 12px; }
+    #error-text { min-height: 18px; color: #fca5a5; font-size: 12px; }
+    .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 0; flex: 1; }
+    .panel { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; min-height: 0; }
+    .panel h2 { margin: 0 0 8px; font-size: 14px; }
+    .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; overflow: hidden; }
+    .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: rgba(9, 14, 28, 0.5); }
+    .channel-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .channel-name { font-size: 12px; color: var(--muted); }
+    .lamp { width: 10px; height: 10px; border-radius: 999px; background: var(--gray); border: 1px solid rgba(255,255,255,0.1); }
+    .lamp.on { background: var(--green); box-shadow: 0 0 8px rgba(34, 197, 94, 0.8); }
+    .lamp.off { background: #94a3b8; }
+
+    .io-buttons { display: flex; gap: 6px; }
+    button { border: 1px solid transparent; border-radius: 8px; height: 28px; font-size: 12px; color: white; cursor: pointer; background: #334155; }
+    .button-on, .button-off { flex: 1; }
+    .button-on.active { background: var(--green); color: #06270f; font-weight: 700; }
+    .button-off.active { background: #9ca3af; color: #0b1020; font-weight: 700; }
+
+    .pwm-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; }
+    input[type="range"] { width: 100%; }
+    .pwm-value { min-width: 38px; text-align: right; color: var(--muted); font-size: 12px; }
+
+    .label-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; }
+    .label-row input { height: 28px; border-radius: 8px; border: 1px solid var(--card-border); background: #0f172a; color: var(--text); padding: 0 8px; font-size: 12px; }
+    .button-edit { width: 32px; background: #334155; }
+    .button-save { width: 74px; background: #475569; }
+    .button-save.saved { background: var(--green); color: #06270f; }
+    .button-save.unsaved { background: var(--blue); }
+
+    .input-display {
+      position: relative;
+      border: 1px solid #28354f;
+      border-radius: 10px;
+      min-height: 94px;
+      background: linear-gradient(180deg, #0f172a, #101a31);
+      padding: 8px;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 6px;
+    }
+    .input-corner-indicator {
+      position: absolute;
+      left: 7px;
+      top: 7px;
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: #64748b;
+    }
+    .input-corner-indicator.on {
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.95);
+    }
+    .input-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-left: 14px;
+    }
+    .input-label-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+      max-width: 82%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .input-icon-button {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: #1e293b;
+      border: 1px solid #32415f;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .input-name-editor {
+      display: flex;
+      gap: 6px;
+      margin-left: 14px;
+    }
+    .input-name-editor input {
+      flex: 1;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid #32415f;
+      background: #0b1222;
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 13px;
+    }
+    .input-voltage-line {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      font-family: "Segoe UI", "Roboto Mono", monospace;
+      color: #dbe7ff;
+      min-height: 42px;
+    }
+    .input-voltage-line.on { color: #86efac; }
+    .input-status-line {
+      display: flex;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
   </style>
 </head>
 <body>
 <main>
-  <h1>DIO / DO Ports</h1>
+  <h1>ECX-1000-2G DIO Control</h1>
+  <p class="subtitle">DIO mode: 8 DI (read-only) + 8 DO (ON/OFF + PWM command)</p>
   <p id="error-text"></p>
-  <section id="ports-grid" class="grid"></section>
+
+  <section class="layout">
+    <article class="panel">
+      <h2>Входящие сигналы (DI0..DI7)</h2>
+      <div id="input-grid" class="channels"></div>
+    </article>
+
+    <article class="panel">
+      <h2>Исходящие сигналы (DO0..DO7)</h2>
+      <div id="output-grid" class="channels"></div>
+    </article>
+  </section>
 </main>
 
 <script>
-  const applicationModel = { portsByNumber: {}, requestInFlight: false, errorText: "" };
+  const applicationModel = {
+    inputsByChannel: {},
+    outputsByChannel: {},
+    pendingRequest: false,
+    errorText: "",
+    editingInputLabelsByChannel: {},
+    editingOutputLabelsByChannel: {},
+    savedHighlightByLabelKey: {}
+  };
 
-  const portsGridElement = document.getElementById("ports-grid");
+  const inputGridElement = document.getElementById("input-grid");
+  const outputGridElement = document.getElementById("output-grid");
   const errorTextElement = document.getElementById("error-text");
 
   function renderFromModel() {
     errorTextElement.textContent = applicationModel.errorText;
-    portsGridElement.innerHTML = "";
+    renderInputs();
+    renderOutputs();
+  }
 
-    const sortedPortNumbers = Object.keys(applicationModel.portsByNumber).map(Number).sort(function sortAscending(leftNumber, rightNumber) {
-      return leftNumber - rightNumber;
-    });
+  function renderInputs() {
+    inputGridElement.innerHTML = "";
+    const sortedInputChannels = Object.keys(applicationModel.inputsByChannel).map(Number).sort(sortAscendingNumbers);
 
-    sortedPortNumbers.forEach(function renderSinglePort(portNumber) {
-      const singlePortState = applicationModel.portsByNumber[portNumber];
+    sortedInputChannels.forEach(function renderSingleInput(inputChannel) {
+      const inputState = applicationModel.inputsByChannel[inputChannel];
+      const inputLabelDraft = applicationModel.editingInputLabelsByChannel[inputChannel];
+      const isEditingInputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingInputLabelsByChannel, inputChannel);
 
-      const cardElement = document.createElement("article");
-      cardElement.className = "card";
+      const inputCardElement = document.createElement("article");
+      inputCardElement.className = "channel-card";
 
-      const topRowElement = document.createElement("div");
-      topRowElement.className = "row";
+      const inputDisplayElement = document.createElement("section");
+      inputDisplayElement.className = "input-display";
 
-      const titleElement = document.createElement("strong");
-      titleElement.textContent = "Port " + portNumber;
+      const inputCornerIndicatorElement = document.createElement("span");
+      inputCornerIndicatorElement.className = inputState.signal === "on" ? "input-corner-indicator on" : "input-corner-indicator";
 
-      const lampElement = document.createElement("span");
-      lampElement.className = "lamp " + singlePortState.power;
+      if (isEditingInputLabel) {
+        const inputNameEditorElement = document.createElement("div");
+        inputNameEditorElement.className = "input-name-editor";
 
-      topRowElement.appendChild(titleElement);
-      topRowElement.appendChild(lampElement);
+        const inputNameFieldElement = document.createElement("input");
+        inputNameFieldElement.value = inputLabelDraft;
+        inputNameFieldElement.disabled = applicationModel.pendingRequest;
+        inputNameFieldElement.addEventListener("input", function handleInputLabelTyping() {
+          applicationModel.editingInputLabelsByChannel[inputChannel] = inputNameFieldElement.value;
+        });
 
-      const buttonRowElement = document.createElement("div");
-      buttonRowElement.className = "button-row";
+        const saveInputNameButtonElement = document.createElement("button");
+        saveInputNameButtonElement.className = "input-icon-button";
+        saveInputNameButtonElement.textContent = "💾";
+        saveInputNameButtonElement.disabled = applicationModel.pendingRequest;
+        saveInputNameButtonElement.addEventListener("click", function handleInputLabelSave() {
+          void sendInputLabelToServer(inputChannel, inputNameFieldElement.value);
+        });
 
-      const onButtonElement = document.createElement("button");
-      onButtonElement.className = singlePortState.power === "on" ? "on-button active" : "on-button";
-      onButtonElement.textContent = "ON";
-      onButtonElement.disabled = applicationModel.requestInFlight;
-      onButtonElement.addEventListener("click", function onPowerOnClick() {
-        void sendPowerToServer(portNumber, "on");
-      });
+        inputNameEditorElement.appendChild(inputNameFieldElement);
+        inputNameEditorElement.appendChild(saveInputNameButtonElement);
+        inputDisplayElement.appendChild(inputNameEditorElement);
+      } else {
+        const inputHeaderRowElement = document.createElement("div");
+        inputHeaderRowElement.className = "input-header-row";
 
-      const offButtonElement = document.createElement("button");
-      offButtonElement.className = singlePortState.power === "off" ? "off-button active" : "off-button";
-      offButtonElement.textContent = "OFF";
-      offButtonElement.disabled = applicationModel.requestInFlight;
-      offButtonElement.addEventListener("click", function onPowerOffClick() {
-        void sendPowerToServer(portNumber, "off");
-      });
+        const inputLabelTitleElement = document.createElement("div");
+        inputLabelTitleElement.className = "input-label-title";
+        inputLabelTitleElement.textContent = inputState.label;
 
-      buttonRowElement.appendChild(onButtonElement);
-      buttonRowElement.appendChild(offButtonElement);
+        const editInputNameButtonElement = document.createElement("button");
+        editInputNameButtonElement.className = "input-icon-button";
+        editInputNameButtonElement.textContent = "✎";
+        editInputNameButtonElement.disabled = applicationModel.pendingRequest;
+        editInputNameButtonElement.addEventListener("click", function handleInputLabelEditStart() {
+          applicationModel.editingInputLabelsByChannel[inputChannel] = inputState.label;
+          renderFromModel();
+        });
 
-      const labelInputElement = document.createElement("input");
-      labelInputElement.value = singlePortState.label;
-      labelInputElement.placeholder = "Device label";
-      labelInputElement.disabled = applicationModel.requestInFlight;
+        inputHeaderRowElement.appendChild(inputLabelTitleElement);
+        inputHeaderRowElement.appendChild(editInputNameButtonElement);
+        inputDisplayElement.appendChild(inputHeaderRowElement);
+      }
 
-      const saveButtonElement = document.createElement("button");
-      saveButtonElement.className = "save-button";
-      saveButtonElement.textContent = "Сохранить";
-      saveButtonElement.disabled = applicationModel.requestInFlight;
-      saveButtonElement.addEventListener("click", function onSaveClick() {
-        void sendLabelToServer(portNumber, labelInputElement.value);
-      });
+      const inputVoltageLineElement = document.createElement("div");
+      inputVoltageLineElement.className = inputState.signal === "on" ? "input-voltage-line on" : "input-voltage-line";
+      inputVoltageLineElement.textContent = inputState.voltage;
 
-      cardElement.appendChild(topRowElement);
-      cardElement.appendChild(buttonRowElement);
-      cardElement.appendChild(labelInputElement);
-      cardElement.appendChild(saveButtonElement);
+      const inputStatusLineElement = document.createElement("div");
+      inputStatusLineElement.className = "input-status-line";
+      inputStatusLineElement.textContent = inputState.signal === "on" ? "signal detected" : "no signal";
 
-      portsGridElement.appendChild(cardElement);
+      inputDisplayElement.appendChild(inputCornerIndicatorElement);
+      inputDisplayElement.appendChild(inputVoltageLineElement);
+      inputDisplayElement.appendChild(inputStatusLineElement);
+
+      inputCardElement.appendChild(inputDisplayElement);
+      inputGridElement.appendChild(inputCardElement);
     });
   }
 
-  function applyStateFromServer(serverState) {
-    const nextPortsByNumber = {};
-    serverState.ports.forEach(function addPortToMap(singlePortState) {
-      nextPortsByNumber[singlePortState.port] = singlePortState;
+  function renderOutputs() {
+    outputGridElement.innerHTML = "";
+    const sortedOutputChannels = Object.keys(applicationModel.outputsByChannel).map(Number).sort(sortAscendingNumbers);
+
+    sortedOutputChannels.forEach(function renderSingleOutput(outputChannel) {
+      const outputState = applicationModel.outputsByChannel[outputChannel];
+      const labelStateKey = "output-" + outputChannel;
+      const outputDraftLabel = applicationModel.editingOutputLabelsByChannel[outputChannel] || outputState.label;
+
+      const outputCardElement = document.createElement("article");
+      outputCardElement.className = "channel-card";
+
+      const channelHeaderElement = document.createElement("div");
+      channelHeaderElement.className = "channel-header";
+
+      const channelTitleElement = document.createElement("span");
+      channelTitleElement.className = "channel-name";
+      channelTitleElement.textContent = "DO" + (outputChannel - 1);
+
+      const lampElement = document.createElement("span");
+      lampElement.className = "lamp " + outputState.power;
+
+      channelHeaderElement.appendChild(channelTitleElement);
+      channelHeaderElement.appendChild(lampElement);
+
+      const buttonsRowElement = document.createElement("div");
+      buttonsRowElement.className = "io-buttons";
+
+      const enableOutputButtonElement = document.createElement("button");
+      enableOutputButtonElement.className = outputState.power === "on" ? "button-on active" : "button-on";
+      enableOutputButtonElement.textContent = "ON";
+      enableOutputButtonElement.disabled = applicationModel.pendingRequest;
+      enableOutputButtonElement.addEventListener("click", function handleEnableOutput() {
+        void sendOutputPowerToServer(outputChannel, "on");
+      });
+
+      const disableOutputButtonElement = document.createElement("button");
+      disableOutputButtonElement.className = outputState.power === "off" ? "button-off active" : "button-off";
+      disableOutputButtonElement.textContent = "OFF";
+      disableOutputButtonElement.disabled = applicationModel.pendingRequest;
+      disableOutputButtonElement.addEventListener("click", function handleDisableOutput() {
+        void sendOutputPowerToServer(outputChannel, "off");
+      });
+
+      buttonsRowElement.appendChild(enableOutputButtonElement);
+      buttonsRowElement.appendChild(disableOutputButtonElement);
+
+      const pwmRowElement = document.createElement("div");
+      pwmRowElement.className = "pwm-row";
+
+      const pwmSliderElement = document.createElement("input");
+      pwmSliderElement.type = "range";
+      pwmSliderElement.min = "0";
+      pwmSliderElement.max = "100";
+      pwmSliderElement.step = "1";
+      pwmSliderElement.value = String(outputState.pwm);
+      pwmSliderElement.disabled = applicationModel.pendingRequest;
+      pwmSliderElement.addEventListener("change", function handlePWMChange() {
+        void sendOutputPWMToServer(outputChannel, Number(pwmSliderElement.value));
+      });
+
+      const pwmValueElement = document.createElement("span");
+      pwmValueElement.className = "pwm-value";
+      pwmValueElement.textContent = String(outputState.pwm) + "%";
+
+      pwmRowElement.appendChild(pwmSliderElement);
+      pwmRowElement.appendChild(pwmValueElement);
+
+      const labelRowElement = buildOutputLabelControls(outputChannel, outputDraftLabel, labelStateKey);
+
+      outputCardElement.appendChild(channelHeaderElement);
+      outputCardElement.appendChild(buttonsRowElement);
+      outputCardElement.appendChild(pwmRowElement);
+      outputCardElement.appendChild(labelRowElement);
+      outputGridElement.appendChild(outputCardElement);
+    });
+  }
+
+  function buildOutputLabelControls(channel, labelText, labelStateKey) {
+    const labelRowElement = document.createElement("div");
+    labelRowElement.className = "label-row";
+
+    const labelInputElement = document.createElement("input");
+    labelInputElement.value = labelText;
+    labelInputElement.disabled = !Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, channel);
+    labelInputElement.addEventListener("input", function handleLabelInputChange() {
+      applicationModel.editingOutputLabelsByChannel[channel] = labelInputElement.value;
+      applicationModel.savedHighlightByLabelKey[labelStateKey] = false;
     });
 
-    applicationModel.portsByNumber = nextPortsByNumber;
+    const editButtonElement = document.createElement("button");
+    editButtonElement.className = "button-edit";
+    editButtonElement.textContent = "✎";
+    editButtonElement.disabled = applicationModel.pendingRequest;
+    editButtonElement.addEventListener("click", function handleEditStart() {
+      applicationModel.editingOutputLabelsByChannel[channel] = labelText;
+      renderFromModel();
+    });
+
+    const saveButtonElement = document.createElement("button");
+    const hasUnsavedLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, channel);
+    const isSavedLabel = applicationModel.savedHighlightByLabelKey[labelStateKey] === true;
+    saveButtonElement.className = isSavedLabel ? "button-save saved" : (hasUnsavedLabel ? "button-save unsaved" : "button-save");
+    saveButtonElement.textContent = "Сохранить";
+    saveButtonElement.disabled = applicationModel.pendingRequest || !hasUnsavedLabel;
+    saveButtonElement.addEventListener("click", function handleLabelSave() {
+      const nextLabel = applicationModel.editingOutputLabelsByChannel[channel];
+      void sendOutputLabelToServer(channel, nextLabel, labelStateKey);
+    });
+
+    labelRowElement.appendChild(labelInputElement);
+    labelRowElement.appendChild(editButtonElement);
+    labelRowElement.appendChild(saveButtonElement);
+
+    return labelRowElement;
+  }
+
+  function applyStateFromServer(serverState) {
+    if (hasActiveLabelEditing()) {
+      return;
+    }
+
+    const nextInputsByChannel = {};
+    serverState.inputs.forEach(function registerInput(inputState) {
+      nextInputsByChannel[inputState.channel] = inputState;
+    });
+
+    const nextOutputsByChannel = {};
+    serverState.outputs.forEach(function registerOutput(outputState) {
+      nextOutputsByChannel[outputState.channel] = outputState;
+    });
+
+    applicationModel.inputsByChannel = nextInputsByChannel;
+    applicationModel.outputsByChannel = nextOutputsByChannel;
     applicationModel.errorText = "";
     renderFromModel();
   }
 
   async function requestStateFromServer() {
-    const response = await fetch("/api/state");
-    if (!response.ok) {
+    const stateResponse = await fetch("/api/state");
+    if (!stateResponse.ok) {
       throw new Error("state request failed");
     }
-    return response.json();
+
+    return stateResponse.json();
   }
 
-  async function sendPowerToServer(portNumber, nextPower) {
-    applicationModel.requestInFlight = true;
+  async function sendOutputPowerToServer(outputChannel, nextPower) {
+    await runServerCommand(async function sendPowerCommand() {
+      const powerResponse = await fetch("/api/output/power", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: outputChannel, power: nextPower })
+      });
+      if (!powerResponse.ok) {
+        throw new Error(await powerResponse.text());
+      }
+
+      applyStateFromServer(await powerResponse.json());
+    });
+  }
+
+  async function sendOutputPWMToServer(outputChannel, nextPWM) {
+    await runServerCommand(async function sendPWMCommand() {
+      const pwmResponse = await fetch("/api/output/pwm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: outputChannel, pwm: nextPWM })
+      });
+      if (!pwmResponse.ok) {
+        throw new Error(await pwmResponse.text());
+      }
+
+      applyStateFromServer(await pwmResponse.json());
+    });
+  }
+
+  async function sendInputLabelToServer(inputChannel, nextLabel) {
+    await runServerCommand(async function sendInputLabelCommand() {
+      const labelResponse = await fetch("/api/label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "input", channel: inputChannel, label: nextLabel })
+      });
+      if (!labelResponse.ok) {
+        throw new Error(await labelResponse.text());
+      }
+
+      delete applicationModel.editingInputLabelsByChannel[inputChannel];
+      applyStateFromServer(await labelResponse.json());
+    });
+  }
+
+  async function sendOutputLabelToServer(channel, nextLabel, labelStateKey) {
+    await runServerCommand(async function sendLabelCommand() {
+      const labelResponse = await fetch("/api/label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "output", channel: channel, label: nextLabel })
+      });
+      if (!labelResponse.ok) {
+        throw new Error(await labelResponse.text());
+      }
+
+      delete applicationModel.editingOutputLabelsByChannel[channel];
+      applicationModel.savedHighlightByLabelKey[labelStateKey] = true;
+      applyStateFromServer(await labelResponse.json());
+    });
+  }
+
+  async function runServerCommand(serverCommandCallback) {
+    applicationModel.pendingRequest = true;
     applicationModel.errorText = "";
     renderFromModel();
 
     try {
-      const response = await fetch("/api/power", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port: portNumber, power: nextPower })
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      applyStateFromServer(await response.json());
+      await serverCommandCallback();
     } catch (requestError) {
       applicationModel.errorText = String(requestError);
     } finally {
-      applicationModel.requestInFlight = false;
+      applicationModel.pendingRequest = false;
       renderFromModel();
     }
   }
 
-  async function sendLabelToServer(portNumber, nextLabel) {
-    applicationModel.requestInFlight = true;
-    applicationModel.errorText = "";
-    renderFromModel();
-
-    try {
-      const response = await fetch("/api/label", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port: portNumber, label: nextLabel })
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      applyStateFromServer(await response.json());
-    } catch (requestError) {
-      applicationModel.errorText = String(requestError);
-    } finally {
-      applicationModel.requestInFlight = false;
-      renderFromModel();
-    }
+  function sortAscendingNumbers(leftNumber, rightNumber) {
+    return leftNumber - rightNumber;
   }
 
-  requestStateFromServer().then(applyStateFromServer).catch(function onInitialError(initialError) {
+  function startSignalRefreshLoop() {
+    setInterval(function pollState() {
+      if (hasActiveLabelEditing()) {
+        return;
+      }
+
+      requestStateFromServer().then(applyStateFromServer).catch(function handleRefreshError(refreshError) {
+        applicationModel.errorText = String(refreshError);
+        renderFromModel();
+      });
+    }, 600);
+  }
+
+  function hasActiveLabelEditing() {
+    const hasInputEditing = Object.keys(applicationModel.editingInputLabelsByChannel).length > 0;
+    const hasOutputEditing = Object.keys(applicationModel.editingOutputLabelsByChannel).length > 0;
+    return hasInputEditing || hasOutputEditing;
+  }
+
+  requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {
     applicationModel.errorText = String(initialError);
     renderFromModel();
   });
 
+  startSignalRefreshLoop();
   renderFromModel();
 </script>
 </body>
