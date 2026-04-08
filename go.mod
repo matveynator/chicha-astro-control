@@ -1,4 +1,4 @@
-module astro-control
+module chicha-astro-control
 
 go 1.22
 

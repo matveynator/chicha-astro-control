@@ -1,4 +1,4 @@
-# astro-control
+# chicha-astro-control
 
 Desktop-приложение на WebView для управления DIO на Vecow ECX-1000-2G.
 
@@ -23,11 +23,11 @@ go run .
 ## Сборка бинарников
 
 ```bash
-go build -o astro-control .
+go build -o chicha-astro-control .
 ```
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o astro-control.exe .
+GOOS=windows GOARCH=amd64 go build -o chicha-astro-control.exe .
 ```
 
 ## Флаги

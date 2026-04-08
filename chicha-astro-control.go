@@ -202,7 +202,7 @@ func main() {
 	}
 	defer window.Destroy()
 
-	window.SetTitle("astro-control")
+	window.SetTitle("chicha-astro-control")
 	window.SetSize(1120, 760, webview.HintNone)
 	window.Navigate("http://" + address)
 
