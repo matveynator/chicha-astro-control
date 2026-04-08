@@ -16,8 +16,7 @@
       --blue: #3b82f6;
       --ui-alpha: 0.9;
       --base-layout-width: 1480px;
-      --base-layout-height: 900px;
-      --app-scale: min(calc(90vw / var(--base-layout-width)), calc(90vh / var(--base-layout-height)));
+      --app-scale: 1;
     }
 
     * { box-sizing: border-box; }
@@ -35,10 +34,10 @@
       display: grid;
       place-items: center;
       overflow: hidden;
+      padding: 6px;
     }
     main {
       width: var(--base-layout-width);
-      height: var(--base-layout-height);
       padding: 10px;
       display: flex;
       flex-direction: column;
@@ -245,6 +244,7 @@
   const outputGridElement = document.getElementById("output-grid");
   const errorTextElement = document.getElementById("error-text");
   const repositoryLinkElement = document.getElementById("repository-link");
+  const mainApplicationElement = document.querySelector("main");
 
   repositoryLinkElement.addEventListener("click", function handleRepositoryLinkClick(clickEvent) {
     clickEvent.preventDefault();
@@ -255,6 +255,23 @@
     errorTextElement.textContent = applicationModel.errorText;
     renderInputs();
     renderOutputs();
+    fitApplicationToViewport();
+  }
+
+  function fitApplicationToViewport() {
+    document.documentElement.style.setProperty("--app-scale", "1");
+
+    const naturalMainWidth = mainApplicationElement.scrollWidth;
+    const naturalMainHeight = mainApplicationElement.scrollHeight;
+    const viewportSafeWidth = window.innerWidth - 12;
+    const viewportSafeHeight = window.innerHeight - 12;
+    const viewportFillRatio = 0.98;
+    const horizontalScale = (viewportSafeWidth * viewportFillRatio) / naturalMainWidth;
+    const verticalScale = (viewportSafeHeight * viewportFillRatio) / naturalMainHeight;
+    const fittedScale = Math.min(horizontalScale, verticalScale);
+    const nextScale = Number.isFinite(fittedScale) && fittedScale > 0 ? fittedScale : 1;
+
+    document.documentElement.style.setProperty("--app-scale", String(nextScale));
   }
 
   function renderInputs() {
@@ -625,6 +642,10 @@
     const hasActiveOutputSlider = Object.keys(applicationModel.activeOutputSliderByChannel).length > 0;
     return hasInputEditing || hasOutputEditing || hasActiveOutputSlider;
   }
+
+  window.addEventListener("resize", function handleViewportResize() {
+    fitApplicationToViewport();
+  });
 
   requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {
     applicationModel.errorText = String(initialError);
