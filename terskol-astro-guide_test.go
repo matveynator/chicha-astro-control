@@ -107,3 +107,18 @@ func TestApplyLabelUsesDefaultPinLabelWhenInputIsBlank(t *testing.T) {
 		t.Fatalf("expected output label DO11, got %q", nextOutputState.Outputs[0].Label)
 	}
 }
+
+func TestBuildInitialStateNormalizesLegacyPortLabelsToRealPins(t *testing.T) {
+	legacyLabels := map[string]string{
+		"input-7":  "DI6",
+		"output-8": "DO7",
+	}
+
+	state := buildInitialState(legacyLabels, map[int]savedOutputState{})
+	if state.Inputs[6].Label != "DI7" {
+		t.Fatalf("expected DI7 for input channel 7, got %q", state.Inputs[6].Label)
+	}
+	if state.Outputs[7].Label != "DO18" {
+		t.Fatalf("expected DO18 for output channel 8, got %q", state.Outputs[7].Label)
+	}
+}

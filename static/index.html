@@ -200,7 +200,8 @@
     pendingRequest: false,
     errorText: "",
     editingInputLabelsByChannel: {},
-    editingOutputLabelsByChannel: {}
+    editingOutputLabelsByChannel: {},
+    activeOutputSliderByChannel: {}
   };
   const outputMaxVoltage = 3.3;
 
@@ -395,7 +396,17 @@
       pwmSliderElement.step = "1";
       pwmSliderElement.value = String(outputState.pwm);
       pwmSliderElement.disabled = applicationModel.pendingRequest;
+      pwmSliderElement.addEventListener("pointerdown", function handleOutputSliderPointerDown() {
+        applicationModel.activeOutputSliderByChannel[outputChannel] = true;
+      });
+      pwmSliderElement.addEventListener("pointerup", function handleOutputSliderPointerUp() {
+        delete applicationModel.activeOutputSliderByChannel[outputChannel];
+      });
+      pwmSliderElement.addEventListener("blur", function handleOutputSliderBlur() {
+        delete applicationModel.activeOutputSliderByChannel[outputChannel];
+      });
       pwmSliderElement.addEventListener("change", function handlePWMChange() {
+        delete applicationModel.activeOutputSliderByChannel[outputChannel];
         void sendOutputPWMToServer(outputChannel, Number(pwmSliderElement.value));
       });
 
@@ -422,7 +433,7 @@
   }
 
   function applyStateFromServer(serverState) {
-    if (hasActiveLabelEditing()) {
+    if (hasActiveEditing()) {
       return;
     }
 
@@ -539,7 +550,7 @@
 
   function startSignalRefreshLoop() {
     setInterval(function pollState() {
-      if (hasActiveLabelEditing()) {
+      if (hasActiveEditing()) {
         return;
       }
 
@@ -550,10 +561,11 @@
     }, 600);
   }
 
-  function hasActiveLabelEditing() {
+  function hasActiveEditing() {
     const hasInputEditing = Object.keys(applicationModel.editingInputLabelsByChannel).length > 0;
     const hasOutputEditing = Object.keys(applicationModel.editingOutputLabelsByChannel).length > 0;
-    return hasInputEditing || hasOutputEditing;
+    const hasActiveOutputSlider = Object.keys(applicationModel.activeOutputSliderByChannel).length > 0;
+    return hasInputEditing || hasOutputEditing || hasActiveOutputSlider;
   }
 
   requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {

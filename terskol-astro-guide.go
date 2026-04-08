@@ -311,10 +311,7 @@ func buildInitialState(savedLabels map[string]string, savedOutputs map[int]saved
 	inputs := make([]inputState, 0, inputCount)
 	for channelIndex := 1; channelIndex <= inputCount; channelIndex++ {
 		labelKey := "input-" + strconv.Itoa(channelIndex)
-		label := strings.TrimSpace(savedLabels[labelKey])
-		if label == "" {
-			label = defaultInputLabel(channelIndex)
-		}
+		label := normalizeInputLabel(channelIndex, savedLabels[labelKey])
 
 		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Hz: "0.00 Hz", Label: label})
 	}
@@ -322,10 +319,7 @@ func buildInitialState(savedLabels map[string]string, savedOutputs map[int]saved
 	outputs := make([]outputState, 0, outputCount)
 	for channelIndex := 1; channelIndex <= outputCount; channelIndex++ {
 		labelKey := "output-" + strconv.Itoa(channelIndex)
-		label := strings.TrimSpace(savedLabels[labelKey])
-		if label == "" {
-			label = defaultOutputLabel(channelIndex)
-		}
+		label := normalizeOutputLabel(channelIndex, savedLabels[labelKey])
 
 		initialPower := "off"
 		initialPWM := 0
@@ -414,6 +408,63 @@ func defaultInputLabel(channel int) string {
 
 func defaultOutputLabel(channel int) string {
 	return fmt.Sprintf("DO%d", channel+10)
+}
+
+func normalizeInputLabel(channel int, rawLabel string) string {
+	sanitizedLabel := strings.TrimSpace(rawLabel)
+	defaultLabel := defaultInputLabel(channel)
+	if sanitizedLabel == "" {
+		return defaultLabel
+	}
+
+	prefix, parsedNumber, isPortLabel := parsePortLabel(sanitizedLabel)
+	if !isPortLabel {
+		return sanitizedLabel
+	}
+
+	if prefix != "DI" || parsedNumber != channel {
+		return defaultLabel
+	}
+
+	return defaultLabel
+}
+
+func normalizeOutputLabel(channel int, rawLabel string) string {
+	sanitizedLabel := strings.TrimSpace(rawLabel)
+	defaultLabel := defaultOutputLabel(channel)
+	if sanitizedLabel == "" {
+		return defaultLabel
+	}
+
+	prefix, parsedNumber, isPortLabel := parsePortLabel(sanitizedLabel)
+	if !isPortLabel {
+		return sanitizedLabel
+	}
+
+	if prefix != "DO" || parsedNumber != channel+10 {
+		return defaultLabel
+	}
+
+	return defaultLabel
+}
+
+func parsePortLabel(rawLabel string) (string, int, bool) {
+	compactLabel := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(rawLabel), " ", ""))
+	if len(compactLabel) < 3 {
+		return "", 0, false
+	}
+
+	prefix := compactLabel[:2]
+	if prefix != "DI" && prefix != "DO" {
+		return "", 0, false
+	}
+
+	parsedNumber, err := strconv.Atoi(compactLabel[2:])
+	if err != nil {
+		return "", 0, false
+	}
+
+	return prefix, parsedNumber, true
 }
 
 func cloneState(source appState) appState {
