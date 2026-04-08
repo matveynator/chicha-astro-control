@@ -39,7 +39,9 @@ var (
 	dioWindowsOutputPathFlag   = flag.String("dio-windows-output-path-template", `C:\Vecow\ECX1K\do%d.value`, "Windows DIO output file path template")
 	dioWindowsInputPathFlag    = flag.String("dio-windows-input-path-template", `C:\Vecow\ECX1K\di%d.value`, "Windows DIO input file path template")
 	labelsFileFlag             = flag.String("labels-file", "dio-labels.json", "path to labels file")
-	inputOnVoltageFlag         = flag.String("input-on-voltage", "24.0V", "voltage text shown for active DI signal")
+	inputOnVoltageFlag         = flag.Float64("input-on-voltage", 24.0, "voltage value used when DI source is digital and signal is active")
+	inputOffVoltageFlag        = flag.Float64("input-off-voltage", 0.0, "voltage value used when DI source is digital and signal is inactive")
+	inputThresholdVoltageFlag  = flag.Float64("input-threshold-voltage", 2.0, "threshold used to map numeric DI voltage to on/off signal")
 )
 
 const (
@@ -56,6 +58,7 @@ type inputState struct {
 	Channel int    `json:"channel"`
 	Signal  string `json:"signal"`
 	Voltage string `json:"voltage"`
+	Hz      string `json:"hz"`
 	Label   string `json:"label"`
 }
 
@@ -93,7 +96,15 @@ type ioPaths struct {
 }
 
 type runtimeConfig struct {
-	inputOnVoltage string
+	inputOnVoltage        float64
+	inputOffVoltage       float64
+	inputThresholdVoltage float64
+}
+
+type inputMetric struct {
+	lastSignal string
+	lastEdgeAt time.Time
+	lastHz     float64
 }
 
 type stateCommand struct {
@@ -127,7 +138,11 @@ func main() {
 	go runStateOwner(
 		stateCommands,
 		resolvedIOPaths,
-		runtimeConfig{inputOnVoltage: *inputOnVoltageFlag},
+		runtimeConfig{
+			inputOnVoltage:        *inputOnVoltageFlag,
+			inputOffVoltage:       *inputOffVoltageFlag,
+			inputThresholdVoltage: *inputThresholdVoltageFlag,
+		},
 		*labelsFileFlag,
 	)
 
@@ -213,12 +228,13 @@ func waitForServerReadiness(address string, timeout time.Duration) {
 
 func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, labelsFile string) {
 	state := buildInitialState(loadLabels(labelsFile))
-	refreshInputSignals(&state, resolvedIOPaths.inputTemplate, config.inputOnVoltage)
+	inputMetrics := buildInitialInputMetrics()
+	refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
 
 	for command := range stateCommands {
 		switch command.kind {
 		case "get":
-			refreshInputSignals(&state, resolvedIOPaths.inputTemplate, config.inputOnVoltage)
+			refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_output_power":
@@ -267,7 +283,7 @@ func buildInitialState(savedLabels map[string]string) appState {
 			label = fmt.Sprintf("DI %d", channelIndex-1)
 		}
 
-		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Label: label})
+		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Hz: "0.00 Hz", Label: label})
 	}
 
 	outputs := make([]outputState, 0, outputCount)
@@ -363,18 +379,73 @@ func cloneState(source appState) appState {
 	return appState{Inputs: copiedInputs, Outputs: copiedOutputs}
 }
 
-func refreshInputSignals(state *appState, inputPathTemplate string, inputOnVoltage string) {
+func buildInitialInputMetrics() []inputMetric {
+	initialMetrics := make([]inputMetric, inputCount)
+	for index := range initialMetrics {
+		initialMetrics[index] = inputMetric{lastSignal: "off", lastHz: 0}
+	}
+	return initialMetrics
+}
+
+func refreshInputSignals(state *appState, inputMetrics []inputMetric, inputPathTemplate string, config runtimeConfig, currentTime time.Time) {
 	for index := range state.Inputs {
-		nextSignal, err := readInputSignal(index+1, inputPathTemplate)
+		rawInputSignal, err := readInputSignal(index+1, inputPathTemplate)
 		if err != nil {
 			continue
 		}
+
+		nextVoltage, nextSignal := parseInputVoltageAndSignal(rawInputSignal, config)
 		state.Inputs[index].Signal = nextSignal
-		state.Inputs[index].Voltage = "0.0V"
-		if nextSignal == "on" {
-			state.Inputs[index].Voltage = inputOnVoltage
-		}
+		state.Inputs[index].Voltage = formatVoltage(nextVoltage)
+		nextFrequency := updateFrequencyMetric(&inputMetrics[index], nextSignal, currentTime)
+		state.Inputs[index].Hz = formatFrequency(nextFrequency)
 	}
+}
+
+func parseInputVoltageAndSignal(rawInputSignal string, config runtimeConfig) (float64, string) {
+	trimmedSignal := strings.TrimSpace(rawInputSignal)
+	if parsedVoltage, err := strconv.ParseFloat(trimmedSignal, 64); err == nil {
+		nextSignal := "off"
+		if parsedVoltage >= config.inputThresholdVoltage {
+			nextSignal = "on"
+		}
+		return parsedVoltage, nextSignal
+	}
+
+	if trimmedSignal == "1" {
+		return config.inputOnVoltage, "on"
+	}
+
+	return config.inputOffVoltage, "off"
+}
+
+func updateFrequencyMetric(metric *inputMetric, nextSignal string, currentTime time.Time) float64 {
+	if metric.lastSignal == "" {
+		metric.lastSignal = nextSignal
+		return metric.lastHz
+	}
+
+	if metric.lastSignal != nextSignal {
+		if !metric.lastEdgeAt.IsZero() {
+			secondsBetweenEdges := currentTime.Sub(metric.lastEdgeAt).Seconds()
+			if secondsBetweenEdges > 0 {
+				metric.lastHz = 1.0 / (2.0 * secondsBetweenEdges)
+			}
+		}
+		metric.lastEdgeAt = currentTime
+		metric.lastSignal = nextSignal
+	}
+}
+
+	return metric.lastHz
+}
+
+func formatVoltage(voltage float64) string {
+	return fmt.Sprintf("%.2fV", voltage)
+}
+
+func formatFrequency(frequencyHz float64) string {
+	return fmt.Sprintf("%.2f Hz", frequencyHz)
 }
 
 func writeOutputPower(channel int, nextPower string, outputPathTemplate string) error {
@@ -398,11 +469,7 @@ func readInputSignal(channel int, inputPathTemplate string) (string, error) {
 		return "off", err
 	}
 
-	if strings.TrimSpace(string(rawSignal)) == "1" {
-		return "on", nil
-	}
-
-	return "off", nil
+	return strings.TrimSpace(string(rawSignal)), nil
 }
 
 func loadLabels(labelsFile string) map[string]string {

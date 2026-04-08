@@ -244,7 +244,7 @@
 
       const inputStatusLineElement = document.createElement("div");
       inputStatusLineElement.className = "input-status-line";
-      inputStatusLineElement.textContent = inputState.signal === "on" ? "signal detected" : "no signal";
+      inputStatusLineElement.textContent = inputState.hz + " • " + (inputState.signal === "on" ? "signal detected" : "no signal");
 
       inputDisplayElement.appendChild(inputCornerIndicatorElement);
       inputDisplayElement.appendChild(inputVoltageLineElement);
