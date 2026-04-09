@@ -650,15 +650,17 @@
 
     const availableViewportWidth = viewportFitElement.clientWidth - viewportHorizontalPadding;
     const availableViewportHeight = viewportFitElement.clientHeight - viewportVerticalPadding;
-    const requiredLayoutWidth = applicationRootElement.scrollWidth;
+
+    applicationRootElement.style.width = String(Math.max(320, availableViewportWidth)) + "px";
+
     const requiredLayoutHeight = applicationRootElement.scrollHeight;
+    if (requiredLayoutHeight <= availableViewportHeight) {
+      applicationRootElement.style.transform = "scale(1)";
+      return;
+    }
 
-    const proportionalScale = Math.min(
-      availableViewportWidth / requiredLayoutWidth,
-      availableViewportHeight / requiredLayoutHeight
-    );
-
-    applicationRootElement.style.transform = "scale(" + proportionalScale + ")";
+    const verticalFitScale = availableViewportHeight / requiredLayoutHeight;
+    applicationRootElement.style.transform = "scale(" + verticalFitScale + ")";
   }
 
   function renderInputs() {
