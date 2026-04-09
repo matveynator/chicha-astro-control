@@ -37,7 +37,7 @@
     }
     .port-indicator-grid {
       display: grid;
-      grid-template-columns: repeat(16, minmax(0, 1fr));
+      grid-template-columns: repeat(10, minmax(0, 1fr));
       gap: 0;
     }
     .port-indicator-cell {
@@ -53,8 +53,14 @@
       color: var(--muted);
       padding: 4px 2px;
     }
-    .port-indicator-cell:nth-child(16n) {
+    .port-indicator-cell:nth-child(10n) {
       border-right: none;
+    }
+    .port-indicator-cell.bottom-row {
+      border-bottom: none;
+    }
+    .port-indicator-cell.reserved {
+      background: rgba(15, 23, 42, 0.45);
     }
     .port-indicator-dot {
       width: 10px;
@@ -70,6 +76,11 @@
       font-size: 10px;
       letter-spacing: 0.4px;
       text-transform: uppercase;
+    }
+    .port-indicator-pin {
+      font-size: 10px;
+      color: #d4ddf2;
+      font-family: "Segoe UI", "Roboto Mono", monospace;
     }
     .port-indicator-footer {
       border-top: 1px solid #22304b;
@@ -307,7 +318,7 @@
         <div class="port-indicator-footer">
           <span>DI 1-8</span>
           <span>DO 11-18</span>
-          <span title="Reserved hardware pin from board documentation">WATCHDOG: pin 20 (reserved)</span>
+          <span title="Reserved hardware pin from board documentation">PIN20: watchdog</span>
           <span id="port-link-state" class="port-indicator-link-state">WS: connecting…</span>
         </div>
       </section>
@@ -370,32 +381,64 @@
   }
 
   function renderPortIndicatorTable() {
-    const orderedPortDescriptors = [];
-    for (let inputChannel = 1; inputChannel <= 8; inputChannel += 1) {
-      orderedPortDescriptors.push({ type: "DI", pinNumber: inputChannel });
-    }
-    for (let outputPin = 11; outputPin <= 18; outputPin += 1) {
-      orderedPortDescriptors.push({ type: "DO", pinNumber: outputPin });
-    }
+    const orderedPortDescriptors = buildOrderedPortDescriptors();
 
     portIndicatorGridElement.innerHTML = "";
-    orderedPortDescriptors.forEach(function renderSinglePort(portDescriptor) {
+    orderedPortDescriptors.forEach(function renderSinglePort(portDescriptor, descriptorIndex) {
       const portCellElement = document.createElement("div");
       portCellElement.className = "port-indicator-cell";
+      if (descriptorIndex >= 10) {
+        portCellElement.classList.add("bottom-row");
+      }
+      if (portDescriptor.type === "RESERVED") {
+        portCellElement.classList.add("reserved");
+      }
 
       const portIndicatorDotElement = document.createElement("span");
       portIndicatorDotElement.className = isPortActive(portDescriptor) ? "port-indicator-dot on" : "port-indicator-dot";
 
+      const portPinLabelElement = document.createElement("span");
+      portPinLabelElement.className = "port-indicator-pin";
+      portPinLabelElement.textContent = String(portDescriptor.pinNumber);
+
       const portIndicatorLabelElement = document.createElement("span");
       portIndicatorLabelElement.className = "port-indicator-label";
-      portIndicatorLabelElement.textContent = portDescriptor.type + " " + String(portDescriptor.pinNumber);
+      portIndicatorLabelElement.textContent = portDescriptor.type;
 
       portCellElement.appendChild(portIndicatorDotElement);
+      portCellElement.appendChild(portPinLabelElement);
       portCellElement.appendChild(portIndicatorLabelElement);
       portIndicatorGridElement.appendChild(portCellElement);
     });
 
     portLinkStateElement.textContent = applicationModel.websocketConnected ? "WS: online" : "WS: reconnecting";
+  }
+
+  function buildOrderedPortDescriptors() {
+    const topRowDescriptors = [];
+    for (let topRowPinNumber = 20; topRowPinNumber >= 11; topRowPinNumber -= 1) {
+      topRowDescriptors.push(describePhysicalPin(topRowPinNumber));
+    }
+
+    const bottomRowDescriptors = [];
+    for (let bottomRowPinNumber = 10; bottomRowPinNumber >= 1; bottomRowPinNumber -= 1) {
+      bottomRowDescriptors.push(describePhysicalPin(bottomRowPinNumber));
+    }
+
+    return topRowDescriptors.concat(bottomRowDescriptors);
+  }
+
+  function describePhysicalPin(pinNumber) {
+    if (pinNumber >= 1 && pinNumber <= 8) {
+      return { type: "DI", pinNumber: pinNumber };
+    }
+    if (pinNumber >= 11 && pinNumber <= 18) {
+      return { type: "DO", pinNumber: pinNumber };
+    }
+    if (pinNumber === 20) {
+      return { type: "WDG", pinNumber: pinNumber };
+    }
+    return { type: "RESERVED", pinNumber: pinNumber };
   }
 
   function isPortActive(portDescriptor) {
@@ -404,9 +447,13 @@
       return Boolean(inputState && inputState.signal === "on");
     }
 
-    const outputChannel = portDescriptor.pinNumber - 10;
-    const outputState = applicationModel.outputsByChannel[outputChannel];
-    return Boolean(outputState && outputState.power === "on");
+    if (portDescriptor.type === "DO") {
+      const outputChannel = portDescriptor.pinNumber - 10;
+      const outputState = applicationModel.outputsByChannel[outputChannel];
+      return Boolean(outputState && outputState.power === "on");
+    }
+
+    return false;
   }
 
   function updateApplicationScale() {
