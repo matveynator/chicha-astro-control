@@ -340,7 +340,7 @@
         <div class="port-indicator-footer">
           <span>DI 1-8</span>
           <span>DO 11-18</span>
-          <span title="Reserved hardware pin from board documentation">PIN20: watchdog</span>
+          <span>PIN20: external VDC</span>
           <span id="port-link-state" class="port-indicator-link-state">WS: connecting…</span>
         </div>
       </section>
@@ -415,11 +415,10 @@
       if (descriptorIndex >= 10) {
         portCellElement.classList.add("bottom-row");
       }
-      if (portDescriptor.type === "RES") {
+      if (portDescriptor.type !== "DI" && portDescriptor.type !== "DO") {
         portCellElement.classList.add("reserved");
       }
       const tooltipText = buildPortTooltipText(portDescriptor);
-      portCellElement.title = tooltipText;
       portCellElement.dataset.tooltipText = tooltipText;
       portCellElement.addEventListener("mouseenter", function handlePortMouseEnter(mouseEvent) {
         showPortHoverTooltip(mouseEvent.currentTarget.dataset.tooltipText, mouseEvent.clientX, mouseEvent.clientY);
@@ -470,10 +469,16 @@
     if (pinNumber >= 11 && pinNumber <= 18) {
       return { type: "DO", pinNumber: pinNumber };
     }
-    if (pinNumber === 20) {
-      return { type: "WDG", pinNumber: pinNumber };
+    if (pinNumber === 9) {
+      return { type: "COM", pinNumber: pinNumber };
     }
-    return { type: "RES", pinNumber: pinNumber };
+    if (pinNumber === 10 || pinNumber === 19) {
+      return { type: "GND", pinNumber: pinNumber };
+    }
+    if (pinNumber === 20) {
+      return { type: "VDC", pinNumber: pinNumber };
+    }
+    return { type: "NC", pinNumber: pinNumber };
   }
 
   function buildPortTooltipText(portDescriptor) {
@@ -491,33 +496,27 @@
         "Важно: используйте общий GND (пин 19/10) и внешнее питание на пине 20.";
     }
 
-    if (portDescriptor.pinNumber === 9) {
+    if (portDescriptor.type === "COM") {
       return "Пин 9 • DI_COM\n" +
         "Общий контакт входов DI1..DI8.\n" +
         "Использование: подключается как общий провод схемы входов (NPN/PNP).";
     }
 
-    if (portDescriptor.pinNumber === 10) {
-      return "Пин 10 • DIO_GND\n" +
+    if (portDescriptor.type === "GND") {
+      return "Пин " + String(portDescriptor.pinNumber) + " • DIO_GND\n" +
         "Общий GND для DIO.\n" +
-        "Использование: общий минус цепей ввода/вывода.";
+        "Использование: общий минус цепей ввода/вывода и питания нагрузки.";
     }
 
-    if (portDescriptor.pinNumber === 19) {
-      return "Пин 19 • DIO_GND\n" +
-        "Общий GND для DIO.\n" +
-        "Использование: общий минус цепей вывода и внешнего питания.";
-    }
-
-    if (portDescriptor.pinNumber === 20) {
-      return "Пин 20 • External VDC / WDG\n" +
+    if (portDescriptor.type === "VDC") {
+      return "Пин 20 • External VDC\n" +
         "Питание DIO: внешний +6..40V (NPN) или +6..48V (PNP).\n" +
-        "Использование: линия питания/служебный контакт watchdog по плате.\n" +
+        "Использование: линия питания для DI/DO цепей.\n" +
         "Не использовать как обычный DI/DO канал.";
     }
 
-    return "Пин " + String(portDescriptor.pinNumber) + " • RES\n" +
-      "Резервный контакт без пользовательского DI/DO канала.\n" +
+    return "Пин " + String(portDescriptor.pinNumber) + " • NC\n" +
+      "Служебный контакт без пользовательского DI/DO канала.\n" +
       "Использование: оставить неподключённым, если нет отдельной схемы из мануала.";
   }
 
