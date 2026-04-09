@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -227,5 +229,30 @@ func TestDetectIORuntimeModeEnablesSimulationWhenPathsMissing(t *testing.T) {
 	}
 	if mode.state.Message == "" {
 		t.Fatalf("expected runtime state message to explain missing GPIO paths")
+	}
+}
+
+func TestFirstMissingChannelPathWithStatIgnoresPermissionErrors(t *testing.T) {
+	statPath := func(path string) (os.FileInfo, error) {
+		if strings.HasSuffix(path, strconv.Itoa(1)) {
+			return nil, os.ErrPermission
+		}
+		return nil, errors.New("transient io error")
+	}
+
+	missingPath := firstMissingChannelPathWithStat("channel-%d", 2, statPath)
+	if missingPath != "" {
+		t.Fatalf("expected no missing path fallback on permission/transient errors, got %q", missingPath)
+	}
+}
+
+func TestFirstMissingChannelPathWithStatReturnsMissingPathForNotExistError(t *testing.T) {
+	statPath := func(path string) (os.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+
+	missingPath := firstMissingChannelPathWithStat("channel-%d", 4, statPath)
+	if missingPath != "channel-1" {
+		t.Fatalf("expected first missing channel path, got %q", missingPath)
 	}
 }

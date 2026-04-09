@@ -278,9 +278,17 @@ func detectIORuntimeMode(resolvedIOPaths ioPaths) ioRuntimeMode {
 }
 
 func firstMissingChannelPath(pathTemplate string, channelCount int) string {
+	return firstMissingChannelPathWithStat(pathTemplate, channelCount, os.Stat)
+}
+
+func firstMissingChannelPathWithStat(pathTemplate string, channelCount int, statPath func(string) (os.FileInfo, error)) string {
 	for channel := 1; channel <= channelCount; channel++ {
 		channelPath := fmt.Sprintf(pathTemplate, channel)
-		if _, err := os.Stat(channelPath); err != nil {
+		if _, err := statPath(channelPath); err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("gpio: stat path failed but file is not missing, continue hardware mode. path=%s err=%v", channelPath, err)
+				continue
+			}
 			return channelPath
 		}
 	}
