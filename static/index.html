@@ -309,6 +309,22 @@
     }
     .output-label-title { font-size: clamp(11px, 1vw, 14px); font-weight: 700; text-transform: uppercase; max-width: 78%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .output-header-actions { display: flex; gap: 6px; }
+    .output-command-indicator {
+      margin-left: 14px;
+      font-size: 10px;
+      letter-spacing: 0.7px;
+      text-transform: uppercase;
+      color: #94a3b8;
+      min-height: 12px;
+    }
+    .output-command-indicator.sending {
+      color: #fbbf24;
+      font-weight: 700;
+    }
+    .output-command-indicator.applied {
+      color: #86efac;
+      font-weight: 700;
+    }
     .output-name-editor {
       display: flex;
       gap: 6px;
@@ -395,8 +411,8 @@
     reverseToggleQueuedByChannel: {},
     reverseToggleProcessing: false,
     websocketConnected: false,
-    pendingOutputPowerByChannel: {},
-    pendingOutputPWMByChannel: {}
+    outputControlInFlightByChannel: {},
+    outputLastAppliedAtByChannel: {}
   };
   const outputMaxVoltage = 3.3;
 
@@ -410,6 +426,7 @@
   const portLinkStateElement = document.getElementById("port-link-state");
   const portHoverTooltipElement = document.getElementById("port-hover-tooltip");
   const controlChannelSocketsByChannel = {};
+  let outputControlRequestSequence = 1;
 
   repositoryLinkElement.addEventListener("click", function handleRepositoryLinkClick(clickEvent) {
     clickEvent.preventDefault();
@@ -812,6 +829,11 @@
 
       }
 
+      const outputCommandIndicatorElement = document.createElement("div");
+      outputCommandIndicatorElement.className = buildOutputCommandIndicatorClassName(outputChannel);
+      outputCommandIndicatorElement.textContent = buildOutputCommandIndicatorText(outputChannel);
+      outputDisplayElement.appendChild(outputCommandIndicatorElement);
+
       const buttonsRowElement = document.createElement("div");
       buttonsRowElement.className = "io-buttons";
 
@@ -1000,36 +1022,41 @@
     const webSocketScheme = window.location.protocol === "https:" ? "wss" : "ws";
     const controlWebSocketEndpoint = webSocketScheme + "://" + window.location.host + "/api/control/ws?channel=" + String(outputChannel);
     const controlWebSocket = new WebSocket(controlWebSocketEndpoint);
-    const socketEntry = { socket: controlWebSocket, pendingMessages: [] };
+    const socketEntry = {
+      socket: controlWebSocket,
+      queuedCommandPayload: null,
+      inFlightRequestID: "",
+      lastSentAtMs: 0
+    };
     controlChannelSocketsByChannel[outputChannel] = socketEntry;
 
     controlWebSocket.addEventListener("open", function handleControlSocketOpen() {
-      while (socketEntry.pendingMessages.length > 0) {
-        const queuedMessageText = socketEntry.pendingMessages.shift();
-        controlWebSocket.send(queuedMessageText);
-      }
+      flushOutputControlCommand(outputChannel);
     });
 
     controlWebSocket.addEventListener("message", function handleControlSocketMessage(messageEvent) {
       try {
         const controlResponse = JSON.parse(messageEvent.data);
+        if (controlResponse.request_id && controlResponse.request_id === socketEntry.inFlightRequestID) {
+          socketEntry.inFlightRequestID = "";
+        }
         if (controlResponse.ok && controlResponse.state) {
           applyStateFromServer(controlResponse.state, true);
+          applicationModel.outputLastAppliedAtByChannel[outputChannel] = Date.now();
         } else if (!controlResponse.ok) {
           applicationModel.errorText = controlResponse.error || "control command failed";
         }
       } catch (controlMessageParseError) {
         applicationModel.errorText = String(controlMessageParseError);
       } finally {
-        delete applicationModel.pendingOutputPowerByChannel[outputChannel];
-        delete applicationModel.pendingOutputPWMByChannel[outputChannel];
+        delete applicationModel.outputControlInFlightByChannel[outputChannel];
+        flushOutputControlCommand(outputChannel);
         renderFromModel();
       }
     });
 
     controlWebSocket.addEventListener("close", function handleControlSocketClose() {
-      delete applicationModel.pendingOutputPowerByChannel[outputChannel];
-      delete applicationModel.pendingOutputPWMByChannel[outputChannel];
+      delete applicationModel.outputControlInFlightByChannel[outputChannel];
       delete controlChannelSocketsByChannel[outputChannel];
       renderFromModel();
     });
@@ -1041,14 +1068,52 @@
     return socketEntry;
   }
 
-  function sendOutputControlCommand(outputChannel, commandPayload) {
+  function flushOutputControlCommand(outputChannel) {
     const socketEntry = ensureControlChannelSocket(outputChannel);
-    const encodedCommand = JSON.stringify(commandPayload);
-    if (socketEntry.socket.readyState === WebSocket.OPEN) {
-      socketEntry.socket.send(encodedCommand);
+    if (socketEntry.socket.readyState !== WebSocket.OPEN) {
       return;
     }
-    socketEntry.pendingMessages.push(encodedCommand);
+    if (socketEntry.inFlightRequestID !== "") {
+      return;
+    }
+    if (!socketEntry.queuedCommandPayload) {
+      return;
+    }
+
+    const requestID = "command-" + String(outputChannel) + "-" + String(outputControlRequestSequence);
+    outputControlRequestSequence += 1;
+    const outgoingPayload = {
+      request_id: requestID,
+      kind: socketEntry.queuedCommandPayload.kind,
+      power: socketEntry.queuedCommandPayload.power,
+      pwm: socketEntry.queuedCommandPayload.pwm
+    };
+    socketEntry.inFlightRequestID = requestID;
+    socketEntry.lastSentAtMs = Date.now();
+    socketEntry.queuedCommandPayload = null;
+    applicationModel.outputControlInFlightByChannel[outputChannel] = requestID;
+    socketEntry.socket.send(JSON.stringify(outgoingPayload));
+  }
+
+  function sendOutputControlCommand(outputChannel, commandPayload) {
+    const socketEntry = ensureControlChannelSocket(outputChannel);
+    if (commandPayload.kind === "power" && commandPayload.power === "off") {
+      socketEntry.queuedCommandPayload = commandPayload;
+    } else if (!socketEntry.queuedCommandPayload) {
+      socketEntry.queuedCommandPayload = commandPayload;
+    } else if (commandPayload.kind === "power" || socketEntry.queuedCommandPayload.kind !== "power") {
+      socketEntry.queuedCommandPayload = commandPayload;
+    }
+
+    const nowMilliseconds = Date.now();
+    if (socketEntry.inFlightRequestID !== "" && nowMilliseconds-socketEntry.lastSentAtMs > 1000) {
+      socketEntry.inFlightRequestID = "";
+      delete applicationModel.outputControlInFlightByChannel[outputChannel];
+    }
+    if (socketEntry.socket.readyState === WebSocket.OPEN) {
+      flushOutputControlCommand(outputChannel);
+      return;
+    }
   }
 
   async function sendOutputPowerToServer(outputChannel, nextPower, powerCommandOptions) {
@@ -1125,6 +1190,34 @@
 
   function sortAscendingNumbers(leftNumber, rightNumber) {
     return leftNumber - rightNumber;
+  }
+
+  function buildOutputCommandIndicatorClassName(outputChannel) {
+    const hasInFlightCommand = Boolean(applicationModel.outputControlInFlightByChannel[outputChannel]);
+    if (hasInFlightCommand) {
+      return "output-command-indicator sending";
+    }
+
+    const lastAppliedTimestampMs = applicationModel.outputLastAppliedAtByChannel[outputChannel] || 0;
+    if (Date.now() - lastAppliedTimestampMs < 1200) {
+      return "output-command-indicator applied";
+    }
+
+    return "output-command-indicator";
+  }
+
+  function buildOutputCommandIndicatorText(outputChannel) {
+    const hasInFlightCommand = Boolean(applicationModel.outputControlInFlightByChannel[outputChannel]);
+    if (hasInFlightCommand) {
+      return "sending…";
+    }
+
+    const lastAppliedTimestampMs = applicationModel.outputLastAppliedAtByChannel[outputChannel] || 0;
+    if (Date.now() - lastAppliedTimestampMs < 1200) {
+      return "applied";
+    }
+
+    return "ready";
   }
 
   function formatOutputVoltage(outputPWMPercent) {

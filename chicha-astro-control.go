@@ -15,6 +15,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -838,20 +839,25 @@ type webSocketConnection struct {
 }
 
 type controlWebSocketRequest struct {
-	Kind  string `json:"kind"`
-	Power string `json:"power"`
-	PWM   int    `json:"pwm"`
+	RequestID string `json:"request_id"`
+	Kind      string `json:"kind"`
+	Power     string `json:"power"`
+	PWM       int    `json:"pwm"`
 }
 
 type controlWebSocketResponse struct {
-	OK      bool     `json:"ok"`
-	Error   string   `json:"error,omitempty"`
-	Channel int      `json:"channel"`
-	Kind    string   `json:"kind"`
-	State   appState `json:"state"`
+	RequestID string   `json:"request_id"`
+	OK        bool     `json:"ok"`
+	Error     string   `json:"error,omitempty"`
+	Channel   int      `json:"channel"`
+	Kind      string   `json:"kind"`
+	State     appState `json:"state"`
 }
 
 func upgradeToWebSocket(writer http.ResponseWriter, request *http.Request) (*webSocketConnection, error) {
+	if !isWebSocketOriginAllowed(request) {
+		return nil, errors.New("origin is not allowed")
+	}
 	if !strings.EqualFold(request.Header.Get("Upgrade"), "websocket") {
 		return nil, errors.New("missing websocket upgrade header")
 	}
@@ -887,6 +893,22 @@ func upgradeToWebSocket(writer http.ResponseWriter, request *http.Request) (*web
 	}
 
 	return &webSocketConnection{socket: socket}, nil
+}
+
+func isWebSocketOriginAllowed(request *http.Request) bool {
+	originText := strings.TrimSpace(request.Header.Get("Origin"))
+	if originText == "" {
+		return true
+	}
+
+	originURL, err := url.Parse(originText)
+	if err != nil {
+		return false
+	}
+	if originURL.Host == "" || request.Host == "" {
+		return false
+	}
+	return strings.EqualFold(originURL.Host, request.Host)
 }
 
 func buildWebSocketAcceptValue(websocketKey string) string {
@@ -1030,10 +1052,11 @@ func handleControlWebSocket(stateCommands chan<- stateCommand) http.HandlerFunc 
 			}
 
 			controlResponse := controlWebSocketResponse{
-				OK:      controlReply.err == nil,
-				Channel: channelNumber,
-				Kind:    controlRequest.Kind,
-				State:   controlReply.state,
+				RequestID: controlRequest.RequestID,
+				OK:        controlReply.err == nil,
+				Channel:   channelNumber,
+				Kind:      controlRequest.Kind,
+				State:     controlReply.state,
 			}
 			if controlReply.err != nil {
 				controlResponse.Error = controlReply.err.Error()
