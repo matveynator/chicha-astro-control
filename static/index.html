@@ -23,7 +23,7 @@
     #viewport-fit { width: 100vw; height: 100vh; overflow: hidden; display: flex; justify-content: center; align-items: flex-start; padding: clamp(4px, 0.5vw, 8px); }
     main { width: 1480px; margin: 0 auto; padding: clamp(6px, 0.8vw, 10px); display: flex; flex-direction: column; gap: 6px; transform-origin: top center; }
     #error-text { min-height: 16px; color: #fca5a5; font-size: clamp(10px, 0.85vw, 12px); margin: 0; }
-    .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
     .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; }
     .panel h2 { margin: 0 0 8px; font-size: clamp(11px, 1vw, 15px); }
     .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
@@ -478,7 +478,7 @@
       enableOutputButtonElement.textContent = "ON";
       enableOutputButtonElement.disabled = applicationModel.pendingRequest;
       enableOutputButtonElement.addEventListener("click", function handleEnableOutput() {
-        void sendOutputPowerToServer(outputChannel, "on", true);
+        void sendOutputPowerToServer(outputChannel, "on", { startCountdownAfterChange: true, cancelCountdownBeforeChange: false });
       });
 
       const disableOutputButtonElement = document.createElement("button");
@@ -486,7 +486,7 @@
       disableOutputButtonElement.textContent = "OFF";
       disableOutputButtonElement.disabled = applicationModel.pendingRequest;
       disableOutputButtonElement.addEventListener("click", function handleDisableOutput() {
-        void sendOutputPowerToServer(outputChannel, "off", true);
+        void sendOutputPowerToServer(outputChannel, "off", { startCountdownAfterChange: false, cancelCountdownBeforeChange: true });
       });
 
       buttonsRowElement.appendChild(enableOutputButtonElement);
@@ -625,7 +625,12 @@
     return stateResponse.json();
   }
 
-  async function sendOutputPowerToServer(outputChannel, nextPower, startCountdownAfterChange) {
+  async function sendOutputPowerToServer(outputChannel, nextPower, powerCommandOptions) {
+    const commandOptions = powerCommandOptions || { startCountdownAfterChange: false, cancelCountdownBeforeChange: false };
+    if (commandOptions.cancelCountdownBeforeChange) {
+      clearOutputCountdown(outputChannel);
+    }
+
     await runServerCommand(async function sendPowerCommand() {
       const powerResponse = await fetch("/api/output/power", {
         method: "POST",
@@ -637,7 +642,7 @@
       }
 
       applyStateFromServer(await powerResponse.json());
-      if (startCountdownAfterChange) {
+      if (commandOptions.startCountdownAfterChange) {
         startOutputCountdownIfConfigured(outputChannel, nextPower);
       }
     });
@@ -810,7 +815,7 @@
 
       channelsToToggle.forEach(function triggerReversePower(toggleInfo) {
         delete applicationModel.timerCountdownDeadlineByChannel[toggleInfo.channel];
-        void sendOutputPowerToServer(toggleInfo.channel, toggleInfo.reversePower, false);
+        void sendOutputPowerToServer(toggleInfo.channel, toggleInfo.reversePower, { startCountdownAfterChange: false, cancelCountdownBeforeChange: false });
       });
 
       renderFromModel();
@@ -830,6 +835,10 @@
         delete applicationModel.timerCountdownDeadlineByChannel[channelKey];
       }
     });
+  }
+
+  function clearOutputCountdown(outputChannel) {
+    delete applicationModel.timerCountdownDeadlineByChannel[outputChannel];
   }
 
   function renderTimerDisplay(outputChannel) {
