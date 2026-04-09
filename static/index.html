@@ -95,6 +95,27 @@
     .port-indicator-link-state {
       font-family: "Segoe UI", "Roboto Mono", monospace;
     }
+    .port-hover-tooltip {
+      position: fixed;
+      z-index: 2000;
+      max-width: 320px;
+      pointer-events: none;
+      background: rgba(2, 6, 23, 0.96);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #e7edf8;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-line;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      opacity: 0;
+      transform: translate3d(0, 0, 0);
+      transition: opacity 120ms ease;
+    }
+    .port-hover-tooltip.visible {
+      opacity: 1;
+    }
     .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 5px; display: flex; flex-direction: column; gap: 4px; background: rgba(9, 14, 28, var(--ui-alpha)); }
     .io-buttons { display: flex; gap: 6px; }
     button { border: 1px solid transparent; border-radius: 8px; height: clamp(24px, 2vw, 32px); font-size: clamp(11px, 0.9vw, 13px); color: white; cursor: pointer; background: rgba(51, 65, 85, var(--ui-alpha)); }
@@ -337,6 +358,7 @@
   </footer>
 </main>
 </div>
+<div id="port-hover-tooltip" class="port-hover-tooltip"></div>
 
 <script>
   const applicationModel = {
@@ -366,6 +388,7 @@
   const errorTextElement = document.getElementById("error-text");
   const repositoryLinkElement = document.getElementById("repository-link");
   const portLinkStateElement = document.getElementById("port-link-state");
+  const portHoverTooltipElement = document.getElementById("port-hover-tooltip");
 
   repositoryLinkElement.addEventListener("click", function handleRepositoryLinkClick(clickEvent) {
     clickEvent.preventDefault();
@@ -395,7 +418,16 @@
       if (portDescriptor.type === "RES") {
         portCellElement.classList.add("reserved");
       }
-      portCellElement.title = buildPortTooltipText(portDescriptor);
+      const tooltipText = buildPortTooltipText(portDescriptor);
+      portCellElement.title = tooltipText;
+      portCellElement.dataset.tooltipText = tooltipText;
+      portCellElement.addEventListener("mouseenter", function handlePortMouseEnter(mouseEvent) {
+        showPortHoverTooltip(mouseEvent.currentTarget.dataset.tooltipText, mouseEvent.clientX, mouseEvent.clientY);
+      });
+      portCellElement.addEventListener("mousemove", function handlePortMouseMove(mouseEvent) {
+        showPortHoverTooltip(mouseEvent.currentTarget.dataset.tooltipText, mouseEvent.clientX, mouseEvent.clientY);
+      });
+      portCellElement.addEventListener("mouseleave", hidePortHoverTooltip);
 
       const portIndicatorDotElement = document.createElement("span");
       portIndicatorDotElement.className = isPortActive(portDescriptor) ? "port-indicator-dot on" : "port-indicator-dot";
@@ -487,6 +519,32 @@
     return "Пин " + String(portDescriptor.pinNumber) + " • RES\n" +
       "Резервный контакт без пользовательского DI/DO канала.\n" +
       "Использование: оставить неподключённым, если нет отдельной схемы из мануала.";
+  }
+
+  function showPortHoverTooltip(tooltipText, pointerClientX, pointerClientY) {
+    portHoverTooltipElement.textContent = tooltipText;
+    portHoverTooltipElement.classList.add("visible");
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const tooltipRect = portHoverTooltipElement.getBoundingClientRect();
+
+    let tooltipLeft = pointerClientX + 14;
+    let tooltipTop = pointerClientY + 14;
+
+    if (tooltipLeft + tooltipRect.width > viewportWidth - 8) {
+      tooltipLeft = Math.max(8, pointerClientX - tooltipRect.width - 14);
+    }
+    if (tooltipTop + tooltipRect.height > viewportHeight - 8) {
+      tooltipTop = Math.max(8, pointerClientY - tooltipRect.height - 14);
+    }
+
+    portHoverTooltipElement.style.left = String(tooltipLeft) + "px";
+    portHoverTooltipElement.style.top = String(tooltipTop) + "px";
+  }
+
+  function hidePortHoverTooltip() {
+    portHoverTooltipElement.classList.remove("visible");
   }
 
   function isPortActive(portDescriptor) {
