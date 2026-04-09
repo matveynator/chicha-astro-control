@@ -26,6 +26,7 @@
     .layout { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
     .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; }
     .panel h2 { margin: 0 0 8px; font-size: clamp(11px, 1vw, 15px); }
+    .panel-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: #c8d3ec; }
     .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
     .port-indicator-table {
       width: 100%;
@@ -312,7 +313,7 @@
 
   <section class="layout">
     <article class="panel">
-      <h2>Датчики (реальные пины 1..8)</h2>
+      <h2>ECX-1000 порты DIO/GPIO:</h2>
       <section class="port-indicator-table">
         <div id="port-indicator-grid" class="port-indicator-grid"></div>
         <div class="port-indicator-footer">
@@ -322,6 +323,7 @@
           <span id="port-link-state" class="port-indicator-link-state">WS: connecting…</span>
         </div>
       </section>
+      <p class="panel-subtitle">Датчики (реальные пины 1..8)</p>
       <div id="input-grid" class="channels"></div>
     </article>
 
@@ -390,7 +392,7 @@
       if (descriptorIndex >= 10) {
         portCellElement.classList.add("bottom-row");
       }
-      if (portDescriptor.type === "RESERVED") {
+      if (portDescriptor.type === "RES") {
         portCellElement.classList.add("reserved");
       }
 
@@ -438,7 +440,7 @@
     if (pinNumber === 20) {
       return { type: "WDG", pinNumber: pinNumber };
     }
-    return { type: "RESERVED", pinNumber: pinNumber };
+    return { type: "RES", pinNumber: pinNumber };
   }
 
   function isPortActive(portDescriptor) {
