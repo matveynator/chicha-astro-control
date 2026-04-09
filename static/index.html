@@ -436,7 +436,7 @@
       const configuredTimerSpec = applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
       const timerDraftSpec = isEditingOutputTimer ? applicationModel.editingOutputTimersByChannel[outputChannel] : configuredTimerSpec;
       const timerValidationMessage = applicationModel.timerValidationMessageByChannel[outputChannel] || "";
-      const timerFormatHintText = "Формат: 1ns 1ms 1s 1m 1M 1h 1d 1y 1Y. Без суффикса = секунды.";
+      const timerFormatHintText = "Формат: 0.5s 1ms 1m 1M 1h 1d 1y. Поддержка ',' и '.', без суффикса = секунды.";
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -559,7 +559,7 @@
         const timerInputElement = document.createElement("input");
         timerInputElement.className = "timer-input";
         timerInputElement.value = timerDraftSpec;
-        timerInputElement.placeholder = "0s";
+        timerInputElement.placeholder = "0.5s";
         timerInputElement.title = timerValidationMessage || timerFormatHintText;
         if (timerValidationMessage !== "") {
           timerInputElement.classList.add("invalid");
@@ -785,12 +785,16 @@
       return { ok: true, milliseconds: 0, normalizedSpec: "0s" };
     }
 
-    const durationMatch = normalizedRawValue.match(/^(\d+)(ns|ms|s|m|M|h|d|y|Y)?$/);
+    const durationMatch = normalizedRawValue.match(/^(\d+(?:[.,]\d+)?)(ns|ms|s|m|M|h|d|y|Y)?$/);
     if (!durationMatch) {
       return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
     }
 
-    const durationAmount = Number(durationMatch[1]);
+    const parsedDurationAmountText = durationMatch[1].replace(",", ".");
+    const durationAmount = Number(parsedDurationAmountText);
+    if (!Number.isFinite(durationAmount)) {
+      return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
+    }
     const requestedDurationUnit = durationMatch[2] || "s";
     const canonicalDurationUnit = requestedDurationUnit === "Y" ? "y" : requestedDurationUnit;
 
@@ -806,7 +810,7 @@
     };
 
     const milliseconds = durationAmount * millisecondsByUnit[canonicalDurationUnit];
-    return { ok: true, milliseconds: milliseconds, normalizedSpec: String(durationAmount) + canonicalDurationUnit };
+    return { ok: true, milliseconds: milliseconds, normalizedSpec: parsedDurationAmountText + canonicalDurationUnit };
   }
 
   function syncTimerDefaultsWithOutputs(outputsByChannel) {
