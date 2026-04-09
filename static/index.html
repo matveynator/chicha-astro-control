@@ -239,18 +239,19 @@
       padding: 0 8px;
       font-size: 13px;
     }
-    .input-voltage-line {
+    .input-port-line {
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 28px;
+      font-size: 24px;
       font-weight: 800;
       letter-spacing: 0.5px;
       font-family: "Segoe UI", "Roboto Mono", monospace;
       color: #dbe7ff;
       min-height: 34px;
+      text-transform: uppercase;
     }
-    .input-voltage-line.on { color: #86efac; }
+    .input-port-line.on { color: #86efac; font-weight: 900; }
     .input-status-line {
       display: flex;
       justify-content: center;
@@ -489,7 +490,7 @@
         "NPN (sink): DI_COM (пин 9) подключают к +V питания, вход DI активируется замыканием на V-.\n" +
         "PNP (source): DI_COM (пин 9) подключают к V-, вход DI активируется подачей +V на пин DI.\n" +
         "Практика коммутации: используйте экранированный провод, общий GND через пин 19 (или дублирующий пин 10).\n" +
-        "Измерения в приложении: DI читается как цифровой сигнал; Voltage/Hz в UI являются оценками по состоянию входа и фронтам.";
+        "Измерения в приложении: DI отображается как цифровой сигнал ON/OFF по состоянию входа.";
     }
 
     if (portDescriptor.type === "DO") {
@@ -655,16 +656,16 @@
 
       }
 
-      const inputVoltageLineElement = document.createElement("div");
-      inputVoltageLineElement.className = inputState.signal === "on" ? "input-voltage-line on" : "input-voltage-line";
-      inputVoltageLineElement.textContent = inputState.voltage;
+      const inputPortLineElement = document.createElement("div");
+      inputPortLineElement.className = inputState.signal === "on" ? "input-port-line on" : "input-port-line";
+      inputPortLineElement.textContent = inputState.label || ("DI " + String(inputChannel));
 
       const inputStatusLineElement = document.createElement("div");
       inputStatusLineElement.className = "input-status-line";
-      inputStatusLineElement.textContent = inputState.hz + " • " + (inputState.signal === "on" ? "signal detected" : "no signal");
+      inputStatusLineElement.textContent = inputState.signal === "on" ? "signal detected" : "no signal";
 
       inputDisplayElement.appendChild(inputCornerIndicatorElement);
-      inputDisplayElement.appendChild(inputVoltageLineElement);
+      inputDisplayElement.appendChild(inputPortLineElement);
       inputDisplayElement.appendChild(inputStatusLineElement);
 
       inputCardElement.appendChild(inputDisplayElement);

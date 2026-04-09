@@ -43,9 +43,6 @@ const (
 	outputCount          = 8
 	serverStartupTimeout = 45 * time.Second
 	defaultStartPort     = 7654
-	defaultInputOnV      = 24.0
-	defaultInputOffV     = 0.0
-	defaultInputThreshV  = 2.0
 	defaultPWMFrequency  = 100.0
 )
 
@@ -56,8 +53,6 @@ const (
 type inputState struct {
 	Channel int    `json:"channel"`
 	Signal  string `json:"signal"`
-	Voltage string `json:"voltage"`
-	Hz      string `json:"hz"`
 	Label   string `json:"label"`
 }
 
@@ -94,12 +89,6 @@ type ioPaths struct {
 	outputTemplate string
 }
 
-type runtimeConfig struct {
-	inputOnVoltage        float64
-	inputOffVoltage       float64
-	inputThresholdVoltage float64
-}
-
 type savedOutputState struct {
 	Channel int    `json:"channel"`
 	Power   string `json:"power"`
@@ -109,12 +98,6 @@ type savedOutputState struct {
 type persistedSettings struct {
 	Labels  map[string]string  `json:"labels"`
 	Outputs []savedOutputState `json:"outputs"`
-}
-
-type inputMetric struct {
-	lastSignal string
-	lastEdgeAt time.Time
-	lastHz     float64
 }
 
 type stateCommand struct {
@@ -162,11 +145,6 @@ func main() {
 	go runStateOwner(
 		stateCommands,
 		resolvedIOPaths,
-		runtimeConfig{
-			inputOnVoltage:        defaultInputOnV,
-			inputOffVoltage:       defaultInputOffV,
-			inputThresholdVoltage: defaultInputThreshV,
-		},
 		settingsFile,
 		outputPWMController,
 	)
@@ -325,19 +303,18 @@ func openURLInExternalBrowser(repositoryURL string) error {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, config runtimeConfig, settingsFile string, outputPWMController *pwmController) {
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, settingsFile string, outputPWMController *pwmController) {
 	loadedSettings := loadSettings(settingsFile)
 	state := buildInitialState(loadedSettings.Labels, indexOutputsByChannel(loadedSettings.Outputs))
 	for _, configuredOutput := range state.Outputs {
 		outputPWMController.Apply(configuredOutput)
 	}
-	inputMetrics := buildInitialInputMetrics()
-	refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
+	refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
 
 	for command := range stateCommands {
 		switch command.kind {
 		case "get":
-			refreshInputSignals(&state, inputMetrics, resolvedIOPaths.inputTemplate, config, time.Now())
+			refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_output_power":
@@ -393,7 +370,7 @@ func buildInitialState(savedLabels map[string]string, savedOutputs map[int]saved
 		labelKey := "input-" + strconv.Itoa(channelIndex)
 		label := normalizeInputLabel(channelIndex, savedLabels[labelKey])
 
-		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Voltage: "0.0V", Hz: "0.00 Hz", Label: label})
+		inputs = append(inputs, inputState{Channel: channelIndex, Signal: "off", Label: label})
 	}
 
 	outputs := make([]outputState, 0, outputCount)
@@ -551,77 +528,25 @@ func cloneState(source appState) appState {
 	return appState{Inputs: copiedInputs, Outputs: copiedOutputs}
 }
 
-func buildInitialInputMetrics() []inputMetric {
-	initialMetrics := make([]inputMetric, inputCount)
-	for index := range initialMetrics {
-		initialMetrics[index] = inputMetric{lastSignal: "off", lastHz: 0}
-	}
-	return initialMetrics
-}
-
-func refreshInputSignals(state *appState, inputMetrics []inputMetric, inputPathTemplate string, config runtimeConfig, currentTime time.Time) {
+func refreshInputSignals(state *appState, inputPathTemplate string) {
 	for index := range state.Inputs {
 		rawInputSignal, err := readInputSignal(index+1, inputPathTemplate)
 		if err != nil {
 			continue
 		}
 
-		nextVoltage, nextSignal := parseInputVoltageAndSignal(rawInputSignal, config)
-		state.Inputs[index].Signal = nextSignal
-		state.Inputs[index].Voltage = formatVoltage(nextVoltage)
-		nextFrequency := updateFrequencyMetric(&inputMetrics[index], nextSignal, currentTime)
-		state.Inputs[index].Hz = formatFrequency(nextFrequency)
+		state.Inputs[index].Signal = parseInputSignal(rawInputSignal)
 	}
 }
 
-func parseInputVoltageAndSignal(rawInputSignal string, config runtimeConfig) (float64, string) {
+func parseInputSignal(rawInputSignal string) string {
 	trimmedSignal := strings.TrimSpace(rawInputSignal)
-
-	// Treat common GPIO digital tokens first so sysfs "0"/"1" keep explicit digital voltage mapping.
-	switch trimmedSignal {
-	case "1":
-		return config.inputOnVoltage, "on"
-	case "0":
-		return config.inputOffVoltage, "off"
+	switch strings.ToLower(trimmedSignal) {
+	case "1", "on", "high", "true":
+		return "on"
+	default:
+		return "off"
 	}
-
-	if parsedVoltage, err := strconv.ParseFloat(trimmedSignal, 64); err == nil {
-		nextSignal := "off"
-		if parsedVoltage >= config.inputThresholdVoltage {
-			nextSignal = "on"
-		}
-		return parsedVoltage, nextSignal
-	}
-
-	return config.inputOffVoltage, "off"
-}
-
-func updateFrequencyMetric(metric *inputMetric, nextSignal string, currentTime time.Time) float64 {
-	if metric.lastSignal == "" {
-		metric.lastSignal = nextSignal
-		return metric.lastHz
-	}
-
-	if metric.lastSignal != nextSignal {
-		if !metric.lastEdgeAt.IsZero() {
-			secondsBetweenEdges := currentTime.Sub(metric.lastEdgeAt).Seconds()
-			if secondsBetweenEdges > 0 {
-				metric.lastHz = 1.0 / (2.0 * secondsBetweenEdges)
-			}
-		}
-		metric.lastEdgeAt = currentTime
-		metric.lastSignal = nextSignal
-	}
-
-	return metric.lastHz
-}
-
-func formatVoltage(voltage float64) string {
-	return fmt.Sprintf("%.2fV", voltage)
-}
-
-func formatFrequency(frequencyHz float64) string {
-	return fmt.Sprintf("%.2f Hz", frequencyHz)
 }
 
 func startPWMController(outputPathTemplate string, pwmFrequencyHz float64) *pwmController {
