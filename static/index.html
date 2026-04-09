@@ -395,6 +395,7 @@
       if (portDescriptor.type === "RES") {
         portCellElement.classList.add("reserved");
       }
+      portCellElement.title = buildPortTooltipText(portDescriptor);
 
       const portIndicatorDotElement = document.createElement("span");
       portIndicatorDotElement.className = isPortActive(portDescriptor) ? "port-indicator-dot on" : "port-indicator-dot";
@@ -441,6 +442,51 @@
       return { type: "WDG", pinNumber: pinNumber };
     }
     return { type: "RES", pinNumber: pinNumber };
+  }
+
+  function buildPortTooltipText(portDescriptor) {
+    if (portDescriptor.type === "DI") {
+      return "Пин " + String(portDescriptor.pinNumber) + " • DI вход\n" +
+        "Назначение: дискретный вход (оптопара).\n" +
+        "Использование: подайте/снимите питание на вход для чтения состояния датчика.\n" +
+        "Режим: NPN/PNP через общий контакт DI_COM (пин 9).";
+    }
+
+    if (portDescriptor.type === "DO") {
+      return "Пин " + String(portDescriptor.pinNumber) + " • DO выход\n" +
+        "Назначение: дискретный выход канала " + String(portDescriptor.pinNumber - 11) + ".\n" +
+        "Использование: управляет внешней нагрузкой, индикация зелёная когда выход включён.\n" +
+        "Важно: используйте общий GND (пин 19/10) и внешнее питание на пине 20.";
+    }
+
+    if (portDescriptor.pinNumber === 9) {
+      return "Пин 9 • DI_COM\n" +
+        "Общий контакт входов DI1..DI8.\n" +
+        "Использование: подключается как общий провод схемы входов (NPN/PNP).";
+    }
+
+    if (portDescriptor.pinNumber === 10) {
+      return "Пин 10 • DIO_GND\n" +
+        "Общий GND для DIO.\n" +
+        "Использование: общий минус цепей ввода/вывода.";
+    }
+
+    if (portDescriptor.pinNumber === 19) {
+      return "Пин 19 • DIO_GND\n" +
+        "Общий GND для DIO.\n" +
+        "Использование: общий минус цепей вывода и внешнего питания.";
+    }
+
+    if (portDescriptor.pinNumber === 20) {
+      return "Пин 20 • External VDC / WDG\n" +
+        "Питание DIO: внешний +6..40V (NPN) или +6..48V (PNP).\n" +
+        "Использование: линия питания/служебный контакт watchdog по плате.\n" +
+        "Не использовать как обычный DI/DO канал.";
+    }
+
+    return "Пин " + String(portDescriptor.pinNumber) + " • RES\n" +
+      "Резервный контакт без пользовательского DI/DO канала.\n" +
+      "Использование: оставить неподключённым, если нет отдельной схемы из мануала.";
   }
 
   function isPortActive(portDescriptor) {
