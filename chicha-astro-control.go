@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha1"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -170,6 +172,7 @@ func main() {
 	)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
+	http.HandleFunc("/api/state/ws", handleStateWebSocket(stateCommands))
 	http.HandleFunc("/api/output/power", handleSetOutputPower(stateCommands))
 	http.HandleFunc("/api/output/pwm", handleSetOutputPWM(stateCommands))
 	http.HandleFunc("/api/label", handleSetLabel(stateCommands))
@@ -859,10 +862,7 @@ func saveSettings(settingsFile string, state appState) error {
 
 func handleGetState(stateCommands chan<- stateCommand) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		reply := make(chan stateReply, 1)
-		stateCommands <- stateCommand{kind: "get", reply: reply}
-
-		result := <-reply
+		result := requestStateSnapshot(stateCommands)
 		if result.err != nil {
 			http.Error(writer, result.err.Error(), http.StatusInternalServerError)
 			return
@@ -870,6 +870,129 @@ func handleGetState(stateCommands chan<- stateCommand) http.HandlerFunc {
 
 		writeJSON(writer, result.state)
 	}
+}
+
+func handleStateWebSocket(stateCommands chan<- stateCommand) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		websocketConnection, err := upgradeToWebSocket(writer, request)
+		if err != nil {
+			http.Error(writer, "websocket upgrade failed", http.StatusBadRequest)
+			return
+		}
+		defer websocketConnection.Close()
+
+		latestStateReply := requestStateSnapshot(stateCommands)
+		if latestStateReply.err != nil {
+			log.Printf("websocket: initial state failed: %v", latestStateReply.err)
+			return
+		}
+		if err := websocketConnection.WriteState(latestStateReply.state); err != nil {
+			return
+		}
+
+		streamTicker := time.NewTicker(350 * time.Millisecond)
+		defer streamTicker.Stop()
+		for {
+			<-streamTicker.C
+			currentStateReply := requestStateSnapshot(stateCommands)
+			if currentStateReply.err != nil {
+				return
+			}
+			if err := websocketConnection.WriteState(currentStateReply.state); err != nil {
+				return
+			}
+		}
+	}
+}
+
+type webSocketConnection struct {
+	socket net.Conn
+}
+
+func upgradeToWebSocket(writer http.ResponseWriter, request *http.Request) (*webSocketConnection, error) {
+	if !strings.EqualFold(request.Header.Get("Upgrade"), "websocket") {
+		return nil, errors.New("missing websocket upgrade header")
+	}
+	if !strings.Contains(strings.ToLower(request.Header.Get("Connection")), "upgrade") {
+		return nil, errors.New("missing connection upgrade token")
+	}
+	websocketKey := strings.TrimSpace(request.Header.Get("Sec-WebSocket-Key"))
+	if websocketKey == "" {
+		return nil, errors.New("missing websocket key")
+	}
+
+	websocketAcceptor := buildWebSocketAcceptValue(websocketKey)
+	hijacker, canHijack := writer.(http.Hijacker)
+	if !canHijack {
+		return nil, errors.New("http hijacker unavailable")
+	}
+	socket, bufferedWriter, err := hijacker.Hijack()
+	if err != nil {
+		return nil, err
+	}
+
+	upgradeResponse := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + websocketAcceptor + "\r\n\r\n"
+	if _, err := bufferedWriter.WriteString(upgradeResponse); err != nil {
+		_ = socket.Close()
+		return nil, err
+	}
+	if err := bufferedWriter.Flush(); err != nil {
+		_ = socket.Close()
+		return nil, err
+	}
+
+	return &webSocketConnection{socket: socket}, nil
+}
+
+func buildWebSocketAcceptValue(websocketKey string) string {
+	const websocketAcceptMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	acceptHash := sha1.Sum([]byte(websocketKey + websocketAcceptMagic))
+	return base64.StdEncoding.EncodeToString(acceptHash[:])
+}
+
+func (connection *webSocketConnection) Close() error {
+	return connection.socket.Close()
+}
+
+func (connection *webSocketConnection) WriteState(state appState) error {
+	encodedState, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return connection.writeTextFrame(encodedState)
+}
+
+func (connection *webSocketConnection) writeTextFrame(payload []byte) error {
+	frameHeader := []byte{0x81}
+	payloadLength := len(payload)
+	if payloadLength <= 125 {
+		frameHeader = append(frameHeader, byte(payloadLength))
+	} else if payloadLength <= 65535 {
+		frameHeader = append(frameHeader, 126, byte(payloadLength>>8), byte(payloadLength))
+	} else {
+		frameHeader = append(frameHeader, 127,
+			byte(payloadLength>>56), byte(payloadLength>>48), byte(payloadLength>>40), byte(payloadLength>>32),
+			byte(payloadLength>>24), byte(payloadLength>>16), byte(payloadLength>>8), byte(payloadLength))
+	}
+	if err := connection.socket.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return err
+	}
+	if _, err := connection.socket.Write(frameHeader); err != nil {
+		return err
+	}
+	if _, err := connection.socket.Write(payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+func requestStateSnapshot(stateCommands chan<- stateCommand) stateReply {
+	reply := make(chan stateReply, 1)
+	stateCommands <- stateCommand{kind: "get", reply: reply}
+	return <-reply
 }
 
 func handleSetOutputPower(stateCommands chan<- stateCommand) http.HandlerFunc {

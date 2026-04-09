@@ -27,6 +27,62 @@
     .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; }
     .panel h2 { margin: 0 0 8px; font-size: clamp(11px, 1vw, 15px); }
     .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    .port-indicator-table {
+      width: 100%;
+      border: 1px solid #2c3a57;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 6px;
+      background: rgba(8, 13, 25, var(--ui-alpha));
+    }
+    .port-indicator-grid {
+      display: grid;
+      grid-template-columns: repeat(16, minmax(0, 1fr));
+      gap: 0;
+    }
+    .port-indicator-cell {
+      border-right: 1px solid #22304b;
+      border-bottom: 1px solid #22304b;
+      min-height: 38px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--muted);
+      padding: 4px 2px;
+    }
+    .port-indicator-cell:nth-child(16n) {
+      border-right: none;
+    }
+    .port-indicator-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(100, 116, 139, var(--ui-alpha));
+    }
+    .port-indicator-dot.on {
+      background: rgba(34, 197, 94, var(--ui-alpha));
+      box-shadow: 0 0 10px rgba(34, 197, 94, 0.95);
+    }
+    .port-indicator-label {
+      font-size: 10px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .port-indicator-footer {
+      border-top: 1px solid #22304b;
+      padding: 6px 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: #b2bfd9;
+    }
+    .port-indicator-link-state {
+      font-family: "Segoe UI", "Roboto Mono", monospace;
+    }
     .channel-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 5px; display: flex; flex-direction: column; gap: 4px; background: rgba(9, 14, 28, var(--ui-alpha)); }
     .io-buttons { display: flex; gap: 6px; }
     button { border: 1px solid transparent; border-radius: 8px; height: clamp(24px, 2vw, 32px); font-size: clamp(11px, 0.9vw, 13px); color: white; cursor: pointer; background: rgba(51, 65, 85, var(--ui-alpha)); }
@@ -246,6 +302,15 @@
   <section class="layout">
     <article class="panel">
       <h2>Датчики (реальные пины 1..8)</h2>
+      <section class="port-indicator-table">
+        <div id="port-indicator-grid" class="port-indicator-grid"></div>
+        <div class="port-indicator-footer">
+          <span>DI 1-8</span>
+          <span>DO 11-18</span>
+          <span title="Reserved hardware pin from board documentation">WATCHDOG: pin 20 (reserved)</span>
+          <span id="port-link-state" class="port-indicator-link-state">WS: connecting…</span>
+        </div>
+      </section>
       <div id="input-grid" class="channels"></div>
     </article>
 
@@ -275,16 +340,19 @@
     timerValidationMessageByChannel: {},
     reverseToggleQueue: [],
     reverseToggleQueuedByChannel: {},
-    reverseToggleProcessing: false
+    reverseToggleProcessing: false,
+    websocketConnected: false
   };
   const outputMaxVoltage = 3.3;
 
   const viewportFitElement = document.getElementById("viewport-fit");
   const applicationRootElement = document.getElementById("application-root");
   const inputGridElement = document.getElementById("input-grid");
+  const portIndicatorGridElement = document.getElementById("port-indicator-grid");
   const outputGridElement = document.getElementById("output-grid");
   const errorTextElement = document.getElementById("error-text");
   const repositoryLinkElement = document.getElementById("repository-link");
+  const portLinkStateElement = document.getElementById("port-link-state");
 
   repositoryLinkElement.addEventListener("click", function handleRepositoryLinkClick(clickEvent) {
     clickEvent.preventDefault();
@@ -295,9 +363,50 @@
 
   function renderFromModel() {
     errorTextElement.textContent = applicationModel.errorText;
+    renderPortIndicatorTable();
     renderInputs();
     renderOutputs();
     updateApplicationScale();
+  }
+
+  function renderPortIndicatorTable() {
+    const orderedPortDescriptors = [];
+    for (let inputChannel = 1; inputChannel <= 8; inputChannel += 1) {
+      orderedPortDescriptors.push({ type: "DI", pinNumber: inputChannel });
+    }
+    for (let outputPin = 11; outputPin <= 18; outputPin += 1) {
+      orderedPortDescriptors.push({ type: "DO", pinNumber: outputPin });
+    }
+
+    portIndicatorGridElement.innerHTML = "";
+    orderedPortDescriptors.forEach(function renderSinglePort(portDescriptor) {
+      const portCellElement = document.createElement("div");
+      portCellElement.className = "port-indicator-cell";
+
+      const portIndicatorDotElement = document.createElement("span");
+      portIndicatorDotElement.className = isPortActive(portDescriptor) ? "port-indicator-dot on" : "port-indicator-dot";
+
+      const portIndicatorLabelElement = document.createElement("span");
+      portIndicatorLabelElement.className = "port-indicator-label";
+      portIndicatorLabelElement.textContent = portDescriptor.type + " " + String(portDescriptor.pinNumber);
+
+      portCellElement.appendChild(portIndicatorDotElement);
+      portCellElement.appendChild(portIndicatorLabelElement);
+      portIndicatorGridElement.appendChild(portCellElement);
+    });
+
+    portLinkStateElement.textContent = applicationModel.websocketConnected ? "WS: online" : "WS: reconnecting";
+  }
+
+  function isPortActive(portDescriptor) {
+    if (portDescriptor.type === "DI") {
+      const inputState = applicationModel.inputsByChannel[portDescriptor.pinNumber];
+      return Boolean(inputState && inputState.signal === "on");
+    }
+
+    const outputChannel = portDescriptor.pinNumber - 10;
+    const outputState = applicationModel.outputsByChannel[outputChannel];
+    return Boolean(outputState && outputState.power === "on");
   }
 
   function updateApplicationScale() {
@@ -791,17 +900,41 @@
     return outputVoltage.toFixed(2) + "V";
   }
 
-  function startSignalRefreshLoop() {
-    setInterval(function pollState() {
-      if (hasActiveEditing()) {
-        return;
-      }
+  function startStateWebSocketLoop() {
+    const webSocketScheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const webSocketEndpoint = webSocketScheme + "://" + window.location.host + "/api/state/ws";
 
-      requestStateFromServer().then(applyStateFromServer).catch(function handleRefreshError(refreshError) {
-        applicationModel.errorText = String(refreshError);
+    function connectStateWebSocket() {
+      const stateWebSocket = new WebSocket(webSocketEndpoint);
+
+      stateWebSocket.addEventListener("open", function handleWebSocketOpen() {
+        applicationModel.websocketConnected = true;
+        applicationModel.errorText = "";
         renderFromModel();
       });
-    }, 600);
+
+      stateWebSocket.addEventListener("message", function handleWebSocketMessage(messageEvent) {
+        try {
+          const serverState = JSON.parse(messageEvent.data);
+          applyStateFromServer(serverState);
+        } catch (stateParseError) {
+          applicationModel.errorText = String(stateParseError);
+          renderFromModel();
+        }
+      });
+
+      stateWebSocket.addEventListener("close", function handleWebSocketClose() {
+        applicationModel.websocketConnected = false;
+        renderFromModel();
+        window.setTimeout(connectStateWebSocket, 900);
+      });
+
+      stateWebSocket.addEventListener("error", function handleWebSocketError() {
+        stateWebSocket.close();
+      });
+    }
+
+    connectStateWebSocket();
   }
 
   function hasActiveEditing() {
@@ -990,7 +1123,7 @@
     renderFromModel();
   });
 
-  startSignalRefreshLoop();
+  startStateWebSocketLoop();
   renderFromModel();
 </script>
 </body>
