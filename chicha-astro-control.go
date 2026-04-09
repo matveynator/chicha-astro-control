@@ -193,7 +193,7 @@ func main() {
 	}
 	defer window.Destroy()
 
-	window.SetTitle("astro-control")
+	window.SetTitle("Обсерватория Терскол: chicha-astro-control")
 	window.SetSize(1120, 760, webview.HintNone)
 	window.Navigate("http://" + address)
 
@@ -249,31 +249,23 @@ func listenOnFirstAvailablePort(startPort int) (net.Listener, string) {
 
 func detectIORuntimeMode(resolvedIOPaths ioPaths) ioRuntimeMode {
 	mode := ioRuntimeMode{}
-	messages := make([]string, 0, 2)
 
 	missingInputPath := firstMissingChannelPath(resolvedIOPaths.inputTemplate, inputCount)
 	if missingInputPath != "" {
 		mode.inputSimulation = true
-		messages = append(messages,
-			fmt.Sprintf("GPIO input files not found (example: %s). Running input in test mode.", missingInputPath))
 		log.Printf("gpio: inputs are unavailable, switch to simulation mode. Missing path=%s. Install GPIO drivers or set -DI template.", missingInputPath)
 	}
 
 	missingOutputPath := firstMissingChannelPath(resolvedIOPaths.outputTemplate, outputCount)
 	if missingOutputPath != "" {
 		mode.outputSimulation = true
-		messages = append(messages,
-			fmt.Sprintf("GPIO output files not found (example: %s). Running output in test mode.", missingOutputPath))
 		log.Printf("gpio: outputs are unavailable, switch to simulation mode. Missing path=%s. Install GPIO drivers or set -DO template.", missingOutputPath)
 	}
 
 	if mode.inputSimulation || mode.outputSimulation {
 		mode.state = runtimeState{
 			TestMode: true,
-			Message:  strings.Join(messages, " "),
-		}
-		if runtime.GOOS == "darwin" {
-			mode.state.Message = "macOS did not find GPIO ports and runs in test mode. " + mode.state.Message
+			Message:  "Порты GPIO/DIO недоступны. Укажите пути флагами -DI и -DO. Работаем в демо-режиме.",
 		}
 	} else {
 		mode.state = runtimeState{
