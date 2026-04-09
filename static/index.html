@@ -409,6 +409,7 @@
   const repositoryLinkElement = document.getElementById("repository-link");
   const portLinkStateElement = document.getElementById("port-link-state");
   const portHoverTooltipElement = document.getElementById("port-hover-tooltip");
+  const controlChannelSocketsByChannel = {};
 
   repositoryLinkElement.addEventListener("click", function handleRepositoryLinkClick(clickEvent) {
     clickEvent.preventDefault();
@@ -987,6 +988,69 @@
     return stateResponse.json();
   }
 
+  function ensureControlChannelSocket(outputChannel) {
+    const existingSocketEntry = controlChannelSocketsByChannel[outputChannel];
+    if (existingSocketEntry && existingSocketEntry.socket.readyState === WebSocket.OPEN) {
+      return existingSocketEntry;
+    }
+    if (existingSocketEntry && existingSocketEntry.socket.readyState === WebSocket.CONNECTING) {
+      return existingSocketEntry;
+    }
+
+    const webSocketScheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const controlWebSocketEndpoint = webSocketScheme + "://" + window.location.host + "/api/control/ws?channel=" + String(outputChannel);
+    const controlWebSocket = new WebSocket(controlWebSocketEndpoint);
+    const socketEntry = { socket: controlWebSocket, pendingMessages: [] };
+    controlChannelSocketsByChannel[outputChannel] = socketEntry;
+
+    controlWebSocket.addEventListener("open", function handleControlSocketOpen() {
+      while (socketEntry.pendingMessages.length > 0) {
+        const queuedMessageText = socketEntry.pendingMessages.shift();
+        controlWebSocket.send(queuedMessageText);
+      }
+    });
+
+    controlWebSocket.addEventListener("message", function handleControlSocketMessage(messageEvent) {
+      try {
+        const controlResponse = JSON.parse(messageEvent.data);
+        if (controlResponse.ok && controlResponse.state) {
+          applyStateFromServer(controlResponse.state, true);
+        } else if (!controlResponse.ok) {
+          applicationModel.errorText = controlResponse.error || "control command failed";
+        }
+      } catch (controlMessageParseError) {
+        applicationModel.errorText = String(controlMessageParseError);
+      } finally {
+        delete applicationModel.pendingOutputPowerByChannel[outputChannel];
+        delete applicationModel.pendingOutputPWMByChannel[outputChannel];
+        renderFromModel();
+      }
+    });
+
+    controlWebSocket.addEventListener("close", function handleControlSocketClose() {
+      delete applicationModel.pendingOutputPowerByChannel[outputChannel];
+      delete applicationModel.pendingOutputPWMByChannel[outputChannel];
+      delete controlChannelSocketsByChannel[outputChannel];
+      renderFromModel();
+    });
+
+    controlWebSocket.addEventListener("error", function handleControlSocketError() {
+      controlWebSocket.close();
+    });
+
+    return socketEntry;
+  }
+
+  function sendOutputControlCommand(outputChannel, commandPayload) {
+    const socketEntry = ensureControlChannelSocket(outputChannel);
+    const encodedCommand = JSON.stringify(commandPayload);
+    if (socketEntry.socket.readyState === WebSocket.OPEN) {
+      socketEntry.socket.send(encodedCommand);
+      return;
+    }
+    socketEntry.pendingMessages.push(encodedCommand);
+  }
+
   async function sendOutputPowerToServer(outputChannel, nextPower, powerCommandOptions) {
     const commandOptions = powerCommandOptions || { startCountdownAfterChange: false, cancelCountdownBeforeChange: false };
     if (commandOptions.cancelCountdownBeforeChange) {
@@ -1001,21 +1065,11 @@
     applicationModel.errorText = "";
     renderFromModel();
 
-    let commandSucceeded = false;
-    try {
-      await postOutputPowerCommand(outputChannel, nextPower);
-      commandSucceeded = true;
-      if (commandOptions.startCountdownAfterChange) {
-        startOutputCountdownIfConfigured(outputChannel, nextPower);
-      }
-    } catch (powerCommandError) {
-      applicationModel.errorText = String(powerCommandError);
-    } finally {
-      delete applicationModel.pendingOutputPowerByChannel[outputChannel];
-      renderFromModel();
+    sendOutputControlCommand(outputChannel, { kind: "power", power: nextPower });
+    if (commandOptions.startCountdownAfterChange) {
+      startOutputCountdownIfConfigured(outputChannel, nextPower);
     }
-
-    return commandSucceeded;
+    return true;
   }
 
   async function sendOutputEmergencyOffToServer(outputChannel) {
@@ -1028,36 +1082,7 @@
     applicationModel.errorText = "";
     renderFromModel();
 
-    try {
-      const emergencyOffResponse = await fetch("/api/output/power", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: outputChannel, power: "off" })
-      });
-      if (!emergencyOffResponse.ok) {
-        throw new Error(await emergencyOffResponse.text());
-      }
-
-      applyStateFromServer(await emergencyOffResponse.json(), true);
-    } catch (emergencyOffError) {
-      applicationModel.errorText = String(emergencyOffError);
-    } finally {
-      delete applicationModel.pendingOutputPowerByChannel[outputChannel];
-      renderFromModel();
-    }
-  }
-
-  async function postOutputPowerCommand(outputChannel, nextPower) {
-    const powerResponse = await fetch("/api/output/power", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel: outputChannel, power: nextPower })
-    });
-    if (!powerResponse.ok) {
-      throw new Error(await powerResponse.text());
-    }
-
-    applyStateFromServer(await powerResponse.json(), true);
+    sendOutputControlCommand(outputChannel, { kind: "power", power: "off" });
   }
 
   async function sendOutputPWMToServer(outputChannel, nextPWM) {
@@ -1069,23 +1094,7 @@
     applicationModel.errorText = "";
     renderFromModel();
 
-    try {
-      const pwmResponse = await fetch("/api/output/pwm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: outputChannel, pwm: nextPWM })
-      });
-      if (!pwmResponse.ok) {
-        throw new Error(await pwmResponse.text());
-      }
-
-      applyStateFromServer(await pwmResponse.json(), true);
-    } catch (pwmCommandError) {
-      applicationModel.errorText = String(pwmCommandError);
-    } finally {
-      delete applicationModel.pendingOutputPWMByChannel[outputChannel];
-      renderFromModel();
-    }
+    sendOutputControlCommand(outputChannel, { kind: "pwm", pwm: nextPWM });
   }
 
   async function sendInputLabelToServer(inputChannel, nextLabel) {

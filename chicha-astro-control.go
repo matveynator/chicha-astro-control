@@ -4,10 +4,12 @@ import (
 	"crypto/sha1"
 	"embed"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"mime"
@@ -151,6 +153,7 @@ func main() {
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
 	http.HandleFunc("/api/state/ws", handleStateWebSocket(stateCommands))
+	http.HandleFunc("/api/control/ws", handleControlWebSocket(stateCommands))
 	http.HandleFunc("/api/output/power", handleSetOutputPower(stateCommands))
 	http.HandleFunc("/api/output/pwm", handleSetOutputPWM(stateCommands))
 	http.HandleFunc("/api/label", handleSetLabel(stateCommands))
@@ -834,6 +837,20 @@ type webSocketConnection struct {
 	socket net.Conn
 }
 
+type controlWebSocketRequest struct {
+	Kind  string `json:"kind"`
+	Power string `json:"power"`
+	PWM   int    `json:"pwm"`
+}
+
+type controlWebSocketResponse struct {
+	OK      bool     `json:"ok"`
+	Error   string   `json:"error,omitempty"`
+	Channel int      `json:"channel"`
+	Kind    string   `json:"kind"`
+	State   appState `json:"state"`
+}
+
 func upgradeToWebSocket(writer http.ResponseWriter, request *http.Request) (*webSocketConnection, error) {
 	if !strings.EqualFold(request.Header.Get("Upgrade"), "websocket") {
 		return nil, errors.New("missing websocket upgrade header")
@@ -890,6 +907,14 @@ func (connection *webSocketConnection) WriteState(state appState) error {
 	return connection.writeTextFrame(encodedState)
 }
 
+func (connection *webSocketConnection) ReadJSON(target any) error {
+	readPayload, err := connection.readClientTextFrame()
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(readPayload, target)
+}
+
 func (connection *webSocketConnection) writeTextFrame(payload []byte) error {
 	frameHeader := []byte{0x81}
 	payloadLength := len(payload)
@@ -912,6 +937,116 @@ func (connection *webSocketConnection) writeTextFrame(payload []byte) error {
 		return err
 	}
 	return nil
+}
+
+func (connection *webSocketConnection) readClientTextFrame() ([]byte, error) {
+	frameHeader := make([]byte, 2)
+	if _, err := io.ReadFull(connection.socket, frameHeader); err != nil {
+		return nil, err
+	}
+
+	opcode := frameHeader[0] & 0x0F
+	isMasked := frameHeader[1]&0x80 != 0
+	if !isMasked {
+		return nil, errors.New("client frame must be masked")
+	}
+
+	payloadLength := int(frameHeader[1] & 0x7F)
+	switch payloadLength {
+	case 126:
+		extendedLength := make([]byte, 2)
+		if _, err := io.ReadFull(connection.socket, extendedLength); err != nil {
+			return nil, err
+		}
+		payloadLength = int(binary.BigEndian.Uint16(extendedLength))
+	case 127:
+		extendedLength := make([]byte, 8)
+		if _, err := io.ReadFull(connection.socket, extendedLength); err != nil {
+			return nil, err
+		}
+		parsedLength := binary.BigEndian.Uint64(extendedLength)
+		if parsedLength > 8*1024*1024 {
+			return nil, errors.New("frame too large")
+		}
+		payloadLength = int(parsedLength)
+	}
+
+	maskingKey := make([]byte, 4)
+	if _, err := io.ReadFull(connection.socket, maskingKey); err != nil {
+		return nil, err
+	}
+	payload := make([]byte, payloadLength)
+	if _, err := io.ReadFull(connection.socket, payload); err != nil {
+		return nil, err
+	}
+	for index := range payload {
+		payload[index] ^= maskingKey[index%4]
+	}
+
+	switch opcode {
+	case 0x1:
+		return payload, nil
+	case 0x8:
+		return nil, io.EOF
+	default:
+		return nil, errors.New("unsupported opcode")
+	}
+}
+
+func handleControlWebSocket(stateCommands chan<- stateCommand) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		channelText := strings.TrimSpace(request.URL.Query().Get("channel"))
+		channelNumber, err := strconv.Atoi(channelText)
+		if err != nil || channelNumber < 1 || channelNumber > outputCount {
+			http.Error(writer, "invalid channel", http.StatusBadRequest)
+			return
+		}
+
+		websocketConnection, err := upgradeToWebSocket(writer, request)
+		if err != nil {
+			http.Error(writer, "websocket upgrade failed", http.StatusBadRequest)
+			return
+		}
+		defer websocketConnection.Close()
+
+		for {
+			var controlRequest controlWebSocketRequest
+			if err := websocketConnection.ReadJSON(&controlRequest); err != nil {
+				return
+			}
+
+			controlReply := stateReply{state: requestStateSnapshot(stateCommands).state}
+			switch controlRequest.Kind {
+			case "power":
+				reply := make(chan stateReply, 1)
+				stateCommands <- stateCommand{kind: "set_output_power", channel: channelNumber, power: controlRequest.Power, reply: reply}
+				controlReply = <-reply
+			case "pwm":
+				reply := make(chan stateReply, 1)
+				stateCommands <- stateCommand{kind: "set_output_pwm", channel: channelNumber, pwm: controlRequest.PWM, reply: reply}
+				controlReply = <-reply
+			default:
+				controlReply.err = errors.New("unknown control kind")
+			}
+
+			controlResponse := controlWebSocketResponse{
+				OK:      controlReply.err == nil,
+				Channel: channelNumber,
+				Kind:    controlRequest.Kind,
+				State:   controlReply.state,
+			}
+			if controlReply.err != nil {
+				controlResponse.Error = controlReply.err.Error()
+			}
+			encodedResponse, err := json.Marshal(controlResponse)
+			if err != nil {
+				return
+			}
+			if err := websocketConnection.writeTextFrame(encodedResponse); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func requestStateSnapshot(stateCommands chan<- stateCommand) stateReply {
