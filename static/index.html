@@ -81,6 +81,10 @@
       font-size: 13px;
       font-family: "Segoe UI", "Roboto Mono", monospace;
     }
+    .timer-input.invalid {
+      border-color: #ef4444;
+      box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.35);
+    }
 
     .input-display {
       position: relative;
@@ -267,7 +271,8 @@
     activeOutputSliderByChannel: {},
     editingOutputTimersByChannel: {},
     savedOutputTimersByChannel: {},
-    timerCountdownDeadlineByChannel: {}
+    timerCountdownDeadlineByChannel: {},
+    timerValidationMessageByChannel: {}
   };
   const outputMaxVoltage = 3.3;
 
@@ -430,6 +435,8 @@
       const isEditingOutputTimer = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputTimersByChannel, outputChannel);
       const configuredTimerSpec = applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
       const timerDraftSpec = isEditingOutputTimer ? applicationModel.editingOutputTimersByChannel[outputChannel] : configuredTimerSpec;
+      const timerValidationMessage = applicationModel.timerValidationMessageByChannel[outputChannel] || "";
+      const timerFormatHintText = "Формат: 1ns 1ms 1s 1m 1M 1h 1d 1y 1Y. Без суффикса = секунды.";
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -552,9 +559,25 @@
         const timerInputElement = document.createElement("input");
         timerInputElement.className = "timer-input";
         timerInputElement.value = timerDraftSpec;
+        timerInputElement.placeholder = "0s";
+        timerInputElement.title = timerValidationMessage || timerFormatHintText;
+        if (timerValidationMessage !== "") {
+          timerInputElement.classList.add("invalid");
+        }
         timerInputElement.disabled = applicationModel.pendingRequest;
         timerInputElement.addEventListener("input", function handleTimerTyping() {
           applicationModel.editingOutputTimersByChannel[outputChannel] = timerInputElement.value;
+          const parsedTimerSpec = parseDurationSpec(timerInputElement.value);
+          if (parsedTimerSpec.ok) {
+            delete applicationModel.timerValidationMessageByChannel[outputChannel];
+            timerInputElement.classList.remove("invalid");
+            timerInputElement.title = timerFormatHintText;
+            return;
+          }
+
+          applicationModel.timerValidationMessageByChannel[outputChannel] = timerFormatHintText;
+          timerInputElement.classList.add("invalid");
+          timerInputElement.title = timerFormatHintText;
         });
 
         const saveTimerButtonElement = document.createElement("button");
@@ -564,13 +587,15 @@
         saveTimerButtonElement.addEventListener("click", function handleTimerSave() {
           const parsedTimerSpec = parseDurationSpec(timerInputElement.value);
           if (!parsedTimerSpec.ok) {
-            applicationModel.errorText = "Неверный формат таймера. Используйте 1ns 1ms 1s 1m 1M 1h 1d 1y 1Y";
+            applicationModel.timerValidationMessageByChannel[outputChannel] = timerFormatHintText;
+            applicationModel.errorText = "";
             renderFromModel();
             return;
           }
 
           applicationModel.savedOutputTimersByChannel[outputChannel] = parsedTimerSpec.normalizedSpec;
           delete applicationModel.editingOutputTimersByChannel[outputChannel];
+          delete applicationModel.timerValidationMessageByChannel[outputChannel];
           applicationModel.errorText = "";
           renderFromModel();
         });
@@ -581,6 +606,7 @@
         const timerDisplayElement = document.createElement("div");
         timerDisplayElement.className = "timer-display";
         timerDisplayElement.textContent = renderTimerDisplay(outputChannel);
+        timerDisplayElement.title = timerFormatHintText;
 
         const editTimerButtonElement = document.createElement("button");
         editTimerButtonElement.className = "input-icon-button";
@@ -588,6 +614,7 @@
         editTimerButtonElement.disabled = applicationModel.pendingRequest;
         editTimerButtonElement.addEventListener("click", function handleTimerEditStart() {
           applicationModel.editingOutputTimersByChannel[outputChannel] = configuredTimerSpec;
+          delete applicationModel.timerValidationMessageByChannel[outputChannel];
           renderFromModel();
         });
 
