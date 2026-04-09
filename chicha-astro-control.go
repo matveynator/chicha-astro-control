@@ -69,6 +69,7 @@ type outputState struct {
 type appState struct {
 	Inputs  []inputState  `json:"inputs"`
 	Outputs []outputState `json:"outputs"`
+	Runtime runtimeState  `json:"runtime"`
 }
 
 type setOutputPowerRequest struct {
@@ -90,6 +91,17 @@ type setLabelRequest struct {
 type ioPaths struct {
 	inputTemplate  string
 	outputTemplate string
+}
+
+type runtimeState struct {
+	TestMode bool   `json:"test_mode"`
+	Message  string `json:"message"`
+}
+
+type ioRuntimeMode struct {
+	inputSimulation  bool
+	outputSimulation bool
+	state            runtimeState
 }
 
 type savedOutputState struct {
@@ -138,9 +150,10 @@ func main() {
 		inputTemplate:  resolveIOPathTemplate(*inputPathTemplateFlag, defaultDIPathTemplate()),
 		outputTemplate: resolveIOPathTemplate(*outputPathTemplateFlag, defaultDOPathTemplate()),
 	}
+	runtimeMode := detectIORuntimeMode(resolvedIOPaths)
 
 	stateCommands := make(chan stateCommand)
-	outputPWMController := startPWMController(resolvedIOPaths.outputTemplate, defaultPWMFrequency)
+	outputPWMController := startPWMController(resolvedIOPaths.outputTemplate, defaultPWMFrequency, runtimeMode.outputSimulation)
 	settingsFile, err := resolveSettingsFilePath(*settingsFileFlag)
 	if err != nil {
 		log.Fatalf("startup: settings path resolve failed: %v", err)
@@ -150,6 +163,7 @@ func main() {
 		resolvedIOPaths,
 		settingsFile,
 		outputPWMController,
+		runtimeMode,
 	)
 
 	http.HandleFunc("/api/state", handleGetState(stateCommands))
@@ -233,6 +247,54 @@ func listenOnFirstAvailablePort(startPort int) (net.Listener, string) {
 	return nil, ""
 }
 
+func detectIORuntimeMode(resolvedIOPaths ioPaths) ioRuntimeMode {
+	mode := ioRuntimeMode{}
+	messages := make([]string, 0, 2)
+
+	missingInputPath := firstMissingChannelPath(resolvedIOPaths.inputTemplate, inputCount)
+	if missingInputPath != "" {
+		mode.inputSimulation = true
+		messages = append(messages,
+			fmt.Sprintf("GPIO input files not found (example: %s). Running input in test mode.", missingInputPath))
+		log.Printf("gpio: inputs are unavailable, switch to simulation mode. Missing path=%s. Install GPIO drivers or set -DI template.", missingInputPath)
+	}
+
+	missingOutputPath := firstMissingChannelPath(resolvedIOPaths.outputTemplate, outputCount)
+	if missingOutputPath != "" {
+		mode.outputSimulation = true
+		messages = append(messages,
+			fmt.Sprintf("GPIO output files not found (example: %s). Running output in test mode.", missingOutputPath))
+		log.Printf("gpio: outputs are unavailable, switch to simulation mode. Missing path=%s. Install GPIO drivers or set -DO template.", missingOutputPath)
+	}
+
+	if mode.inputSimulation || mode.outputSimulation {
+		mode.state = runtimeState{
+			TestMode: true,
+			Message:  strings.Join(messages, " "),
+		}
+		if runtime.GOOS == "darwin" {
+			mode.state.Message = "macOS did not find GPIO ports and runs in test mode. " + mode.state.Message
+		}
+	} else {
+		mode.state = runtimeState{
+			TestMode: false,
+			Message:  "",
+		}
+	}
+
+	return mode
+}
+
+func firstMissingChannelPath(pathTemplate string, channelCount int) string {
+	for channel := 1; channel <= channelCount; channel++ {
+		channelPath := fmt.Sprintf(pathTemplate, channel)
+		if _, err := os.Stat(channelPath); err != nil {
+			return channelPath
+		}
+	}
+	return ""
+}
+
 func waitForServerReadiness(address string, timeout time.Duration) {
 	httpClient := http.Client{Timeout: 600 * time.Millisecond}
 	deadline := time.Now().Add(timeout)
@@ -307,18 +369,23 @@ func openURLInExternalBrowser(repositoryURL string) error {
 // State owner goroutine.
 // =============================
 
-func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, settingsFile string, outputPWMController *pwmController) {
+func runStateOwner(stateCommands <-chan stateCommand, resolvedIOPaths ioPaths, settingsFile string, outputPWMController *pwmController, runtimeMode ioRuntimeMode) {
 	loadedSettings := loadSettings(settingsFile)
 	state := buildInitialState(loadedSettings.Labels, indexOutputsByChannel(loadedSettings.Outputs))
+	state.Runtime = runtimeMode.state
 	for _, configuredOutput := range state.Outputs {
 		outputPWMController.Apply(configuredOutput)
 	}
-	refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
+	if !runtimeMode.inputSimulation {
+		refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
+	}
 
 	for command := range stateCommands {
 		switch command.kind {
 		case "get":
-			refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
+			if !runtimeMode.inputSimulation {
+				refreshInputSignals(&state, resolvedIOPaths.inputTemplate)
+			}
 			command.reply <- stateReply{state: cloneState(state)}
 
 		case "set_output_power":
@@ -529,7 +596,7 @@ func cloneState(source appState) appState {
 	copiedOutputs := make([]outputState, len(source.Outputs))
 	copy(copiedOutputs, source.Outputs)
 
-	return appState{Inputs: copiedInputs, Outputs: copiedOutputs}
+	return appState{Inputs: copiedInputs, Outputs: copiedOutputs, Runtime: source.Runtime}
 }
 
 func refreshInputSignals(state *appState, inputPathTemplate string) {
@@ -553,7 +620,7 @@ func parseInputSignal(rawInputSignal string) string {
 	}
 }
 
-func startPWMController(outputPathTemplate string, pwmFrequencyHz float64) *pwmController {
+func startPWMController(outputPathTemplate string, pwmFrequencyHz float64, simulationMode bool) *pwmController {
 	if pwmFrequencyHz <= 0 {
 		pwmFrequencyHz = 100
 	}
@@ -565,7 +632,7 @@ func startPWMController(outputPathTemplate string, pwmFrequencyHz float64) *pwmC
 	for channel := 1; channel <= outputCount; channel++ {
 		channelCommandQueue := make(chan pwmChannelCommand, 1)
 		controller.channelCommands[channel-1] = channelCommandQueue
-		go runPWMChannelLoop(channel, fmt.Sprintf(outputPathTemplate, channel), pwmFrequencyHz, channelCommandQueue)
+		go runPWMChannelLoop(channel, fmt.Sprintf(outputPathTemplate, channel), pwmFrequencyHz, channelCommandQueue, simulationMode)
 	}
 
 	return controller
@@ -593,10 +660,17 @@ func (controller *pwmController) Apply(output outputState) {
 	}
 }
 
-func runPWMChannelLoop(channel int, outputPath string, pwmFrequencyHz float64, channelCommands <-chan pwmChannelCommand) {
+func runPWMChannelLoop(channel int, outputPath string, pwmFrequencyHz float64, channelCommands <-chan pwmChannelCommand, simulationMode bool) {
 	currentCommand := pwmChannelCommand{power: "off", pwm: 0}
 	pwmPeriod := time.Duration(float64(time.Second) / pwmFrequencyHz)
 	log.Printf("pwm: channel=%d path=%s frequency=%.2fHz", channel, outputPath, pwmFrequencyHz)
+	if simulationMode {
+		log.Printf("pwm: channel=%d test mode enabled, GPIO writes are disabled", channel)
+		for {
+			currentCommand = <-channelCommands
+			_ = currentCommand
+		}
+	}
 
 	for {
 		if currentCommand.power != "on" || currentCommand.pwm <= 0 {
@@ -701,16 +775,19 @@ func resolveSettingsFilePath(explicitSettingsFile string) (string, error) {
 
 	settingsDirectory := ""
 	if runtime.GOOS == "windows" {
-		settingsDirectory = `C:/appname.conf`
+		settingsDirectory = `C:/`
 	} else {
 		homeDirectory, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		settingsDirectory = filepath.Join(homeDirectory, ".appname.conf")
+		settingsDirectory = homeDirectory
 	}
 
-	settingsFile := filepath.Join(settingsDirectory, applicationName+".json")
+	settingsFile := filepath.Join(settingsDirectory, "."+strings.ToUpper(applicationName)+".conf")
+	if runtime.GOOS == "windows" {
+		settingsFile = filepath.Join(settingsDirectory, strings.ToUpper(applicationName)+".conf")
+	}
 	return settingsFile, ensureSettingsFile(settingsFile)
 }
 

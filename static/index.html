@@ -411,6 +411,7 @@
     reverseToggleQueuedByChannel: {},
     reverseToggleProcessing: false,
     websocketConnected: false,
+    runtimeMessage: "",
     outputControlInFlightByChannel: {},
     outputLastAppliedAtByChannel: {},
     outputIndicatorRefreshTimerByChannel: {},
@@ -439,7 +440,13 @@
   window.addEventListener("resize", updateApplicationScale);
 
   function renderFromModel() {
-    errorTextElement.textContent = applicationModel.errorText;
+    if (applicationModel.runtimeMessage !== "" && applicationModel.errorText !== "") {
+      errorTextElement.textContent = applicationModel.runtimeMessage + " | " + applicationModel.errorText;
+    } else if (applicationModel.runtimeMessage !== "") {
+      errorTextElement.textContent = applicationModel.runtimeMessage;
+    } else {
+      errorTextElement.textContent = applicationModel.errorText;
+    }
     renderPortIndicatorTable();
     renderInputs();
     renderOutputs();
@@ -1003,6 +1010,7 @@
 
     applicationModel.inputsByChannel = nextInputsByChannel;
     applicationModel.outputsByChannel = nextOutputsByChannel;
+    applicationModel.runtimeMessage = serverState.runtime && serverState.runtime.message ? serverState.runtime.message : "";
     syncTimerDefaultsWithOutputs(nextOutputsByChannel);
     clearEndedCountdowns(nextOutputsByChannel);
     applicationModel.errorText = "";
