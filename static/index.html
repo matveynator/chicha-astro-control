@@ -843,17 +843,17 @@
     };
 
     const durationInSeconds = durationAmount * secondsByUnit[canonicalDurationUnit];
-    const roundedDurationInSeconds = Math.ceil(durationInSeconds);
-    if (!Number.isFinite(roundedDurationInSeconds)) {
+    const normalizedDurationInSeconds = durationInSeconds > 1 ? Math.ceil(durationInSeconds) : durationInSeconds;
+    if (!Number.isFinite(normalizedDurationInSeconds)) {
       return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
     }
 
-    const durationInMilliseconds = roundedDurationInSeconds * 1000;
+    const durationInMilliseconds = normalizedDurationInSeconds * 1000;
     if (!Number.isFinite(durationInMilliseconds)) {
       return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
     }
 
-    return { ok: true, milliseconds: durationInMilliseconds, normalizedSpec: String(roundedDurationInSeconds) + "s" };
+    return { ok: true, milliseconds: durationInMilliseconds, normalizedSpec: String(normalizedDurationInSeconds) + "s" };
   }
 
   function syncTimerDefaultsWithOutputs(outputsByChannel) {
