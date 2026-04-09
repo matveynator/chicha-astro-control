@@ -439,7 +439,7 @@
       const configuredTimerSpec = applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
       const timerDraftSpec = isEditingOutputTimer ? applicationModel.editingOutputTimersByChannel[outputChannel] : configuredTimerSpec;
       const timerValidationMessage = applicationModel.timerValidationMessageByChannel[outputChannel] || "";
-      const timerFormatHintText = "Формат: 0.5s 1ms 1m 1M 1h 1d 1y. После сохранения всё переводится в целые секунды.";
+      const timerFormatHintText = "Формат: 0.5s 1ms 1m 1M 1h 1d 1y. Округление только для m/h/d/M/y.";
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -843,7 +843,8 @@
     };
 
     const durationInSeconds = durationAmount * secondsByUnit[canonicalDurationUnit];
-    const normalizedDurationInSeconds = durationInSeconds > 1 ? Math.ceil(durationInSeconds) : durationInSeconds;
+    const shouldRoundToWholeSeconds = canonicalDurationUnit === "m" || canonicalDurationUnit === "h" || canonicalDurationUnit === "d" || canonicalDurationUnit === "M" || canonicalDurationUnit === "y";
+    const normalizedDurationInSeconds = shouldRoundToWholeSeconds ? Math.ceil(durationInSeconds) : durationInSeconds;
     if (!Number.isFinite(normalizedDurationInSeconds)) {
       return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
     }
