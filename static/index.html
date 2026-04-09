@@ -23,7 +23,7 @@
     #viewport-fit { width: 100vw; height: 100vh; overflow: hidden; display: flex; justify-content: center; align-items: flex-start; padding: clamp(4px, 0.5vw, 8px); }
     main { width: 1480px; margin: 0 auto; padding: clamp(6px, 0.8vw, 10px); display: flex; flex-direction: column; gap: 6px; transform-origin: top center; }
     #error-text { min-height: 16px; color: #fca5a5; font-size: clamp(10px, 0.85vw, 12px); margin: 0; }
-    .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: clamp(6px, 0.8vw, 12px); align-items: start; }
     .panel { background: rgba(18, 26, 47, var(--ui-alpha)); border: 1px solid var(--card-border); border-radius: 12px; padding: 6px; display: flex; flex-direction: column; }
     .panel h2 { margin: 0 0 8px; font-size: clamp(11px, 1vw, 15px); }
     .channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
@@ -34,9 +34,57 @@
     .button-on.active { background: rgba(34, 197, 94, var(--ui-alpha)); color: #06270f; font-weight: 700; }
     .button-off.active { background: rgba(156, 163, 175, var(--ui-alpha)); color: #0b1020; font-weight: 700; }
 
-    .pwm-row { display: grid; grid-template-columns: 1fr; align-items: center; gap: 3px; }
+    .pwm-row { display: grid; grid-template-columns: 1fr; align-items: start; gap: 6px; width: 100%; }
+    .pwm-slider-block { width: 100%; min-width: 0; }
     input[type="range"] { width: 100%; }
     .pwm-scale-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+    .timer-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: space-between;
+      width: 100%;
+    }
+    .timer-display {
+      min-width: 0;
+      flex: 1;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid #32415f;
+      background: rgba(11, 18, 34, var(--ui-alpha));
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2395a2bf' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='M12 7.8v4.6l3 1.8'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: 8px center;
+      background-size: 13px 13px;
+      color: var(--text);
+      padding: 0 8px 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      font-size: 13px;
+      font-family: "Segoe UI", "Roboto Mono", monospace;
+    }
+    .timer-input {
+      min-width: 0;
+      width: 100%;
+      flex: 1;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid #32415f;
+      background: rgba(11, 18, 34, var(--ui-alpha));
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2395a2bf' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='M12 7.8v4.6l3 1.8'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: 8px center;
+      background-size: 13px 13px;
+      color: var(--text);
+      padding: 0 8px 0 28px;
+      font-size: 13px;
+      font-family: "Segoe UI", "Roboto Mono", monospace;
+    }
+    .timer-input.invalid {
+      border-color: #ef4444;
+      box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.35);
+    }
 
     .input-display {
       position: relative;
@@ -220,7 +268,14 @@
     errorText: "",
     editingInputLabelsByChannel: {},
     editingOutputLabelsByChannel: {},
-    activeOutputSliderByChannel: {}
+    activeOutputSliderByChannel: {},
+    editingOutputTimersByChannel: {},
+    savedOutputTimersByChannel: {},
+    timerCountdownDeadlineByChannel: {},
+    timerValidationMessageByChannel: {},
+    reverseToggleQueue: [],
+    reverseToggleQueuedByChannel: {},
+    reverseToggleProcessing: false
   };
   const outputMaxVoltage = 3.3;
 
@@ -380,6 +435,11 @@
 
       const isEditingOutputLabel = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputLabelsByChannel, outputChannel);
       const outputDraftLabel = isEditingOutputLabel ? applicationModel.editingOutputLabelsByChannel[outputChannel] : outputState.label;
+      const isEditingOutputTimer = Object.prototype.hasOwnProperty.call(applicationModel.editingOutputTimersByChannel, outputChannel);
+      const configuredTimerSpec = applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
+      const timerDraftSpec = isEditingOutputTimer ? applicationModel.editingOutputTimersByChannel[outputChannel] : configuredTimerSpec;
+      const timerValidationMessage = applicationModel.timerValidationMessageByChannel[outputChannel] || "";
+      const timerFormatHintText = "Формат: 0.5s 1ms 1m 1M 1h 1d 1y. Округление только для m/h/d/M/y.";
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -439,15 +499,15 @@
       enableOutputButtonElement.textContent = "ON";
       enableOutputButtonElement.disabled = applicationModel.pendingRequest;
       enableOutputButtonElement.addEventListener("click", function handleEnableOutput() {
-        void sendOutputPowerToServer(outputChannel, "on");
+        void sendOutputPowerToServer(outputChannel, "on", { startCountdownAfterChange: true, cancelCountdownBeforeChange: false });
       });
 
       const disableOutputButtonElement = document.createElement("button");
       disableOutputButtonElement.className = outputState.power === "off" ? "button-off active" : "button-off";
       disableOutputButtonElement.textContent = "OFF";
-      disableOutputButtonElement.disabled = applicationModel.pendingRequest;
-      disableOutputButtonElement.addEventListener("click", function handleDisableOutput() {
-        void sendOutputPowerToServer(outputChannel, "off");
+      disableOutputButtonElement.disabled = false;
+      disableOutputButtonElement.addEventListener("click", function handleEmergencyDisableOutput() {
+        void sendOutputEmergencyOffToServer(outputChannel);
       });
 
       buttonsRowElement.appendChild(enableOutputButtonElement);
@@ -487,10 +547,85 @@
         pwmScaleRightElement.textContent = formatOutputVoltage(Number(pwmSliderElement.value));
       });
 
-      pwmRowElement.appendChild(pwmSliderElement);
+      const pwmSliderBlockElement = document.createElement("div");
+      pwmSliderBlockElement.className = "pwm-slider-block";
+      pwmSliderBlockElement.appendChild(pwmSliderElement);
       pwmScaleRowElement.appendChild(pwmScaleLeftElement);
       pwmScaleRowElement.appendChild(pwmScaleRightElement);
-      pwmRowElement.appendChild(pwmScaleRowElement);
+      pwmSliderBlockElement.appendChild(pwmScaleRowElement);
+      pwmRowElement.appendChild(pwmSliderBlockElement);
+
+      const timerControlElement = document.createElement("div");
+      timerControlElement.className = "timer-control";
+
+      if (isEditingOutputTimer) {
+        const timerInputElement = document.createElement("input");
+        timerInputElement.className = "timer-input";
+        timerInputElement.value = timerDraftSpec;
+        timerInputElement.placeholder = "0.5s";
+        timerInputElement.title = timerValidationMessage || timerFormatHintText;
+        if (timerValidationMessage !== "") {
+          timerInputElement.classList.add("invalid");
+        }
+        timerInputElement.disabled = applicationModel.pendingRequest;
+        timerInputElement.addEventListener("input", function handleTimerTyping() {
+          applicationModel.editingOutputTimersByChannel[outputChannel] = timerInputElement.value;
+          const parsedTimerSpec = parseDurationSpec(timerInputElement.value);
+          if (parsedTimerSpec.ok) {
+            delete applicationModel.timerValidationMessageByChannel[outputChannel];
+            timerInputElement.classList.remove("invalid");
+            timerInputElement.title = timerFormatHintText;
+            return;
+          }
+
+          applicationModel.timerValidationMessageByChannel[outputChannel] = timerFormatHintText;
+          timerInputElement.classList.add("invalid");
+          timerInputElement.title = timerFormatHintText;
+        });
+
+        const saveTimerButtonElement = document.createElement("button");
+        saveTimerButtonElement.className = "input-icon-button";
+        saveTimerButtonElement.textContent = "💾";
+        saveTimerButtonElement.disabled = applicationModel.pendingRequest;
+        saveTimerButtonElement.addEventListener("click", function handleTimerSave() {
+          const parsedTimerSpec = parseDurationSpec(timerInputElement.value);
+          if (!parsedTimerSpec.ok) {
+            applicationModel.timerValidationMessageByChannel[outputChannel] = timerFormatHintText;
+            applicationModel.errorText = "";
+            renderFromModel();
+            return;
+          }
+
+          applicationModel.savedOutputTimersByChannel[outputChannel] = parsedTimerSpec.normalizedSpec;
+          delete applicationModel.editingOutputTimersByChannel[outputChannel];
+          delete applicationModel.timerValidationMessageByChannel[outputChannel];
+          applicationModel.errorText = "";
+          renderFromModel();
+        });
+
+        timerControlElement.appendChild(timerInputElement);
+        timerControlElement.appendChild(saveTimerButtonElement);
+      } else {
+        const timerDisplayElement = document.createElement("div");
+        timerDisplayElement.className = "timer-display";
+        timerDisplayElement.textContent = renderTimerDisplay(outputChannel);
+        timerDisplayElement.title = timerFormatHintText;
+
+        const editTimerButtonElement = document.createElement("button");
+        editTimerButtonElement.className = "input-icon-button";
+        editTimerButtonElement.textContent = "✎";
+        editTimerButtonElement.disabled = applicationModel.pendingRequest;
+        editTimerButtonElement.addEventListener("click", function handleTimerEditStart() {
+          applicationModel.editingOutputTimersByChannel[outputChannel] = configuredTimerSpec;
+          delete applicationModel.timerValidationMessageByChannel[outputChannel];
+          renderFromModel();
+        });
+
+        timerControlElement.appendChild(timerDisplayElement);
+        timerControlElement.appendChild(editTimerButtonElement);
+      }
+
+      pwmRowElement.appendChild(timerControlElement);
 
       outputDisplayElement.appendChild(buttonsRowElement);
       outputDisplayElement.appendChild(pwmRowElement);
@@ -499,8 +634,9 @@
     });
   }
 
-  function applyStateFromServer(serverState) {
-    if (hasActiveEditing()) {
+  function applyStateFromServer(serverState, forceApplyDuringEditing) {
+    const mustForceApply = Boolean(forceApplyDuringEditing);
+    if (!mustForceApply && hasActiveEditing()) {
       return;
     }
 
@@ -516,6 +652,8 @@
 
     applicationModel.inputsByChannel = nextInputsByChannel;
     applicationModel.outputsByChannel = nextOutputsByChannel;
+    syncTimerDefaultsWithOutputs(nextOutputsByChannel);
+    clearEndedCountdowns(nextOutputsByChannel);
     applicationModel.errorText = "";
     renderFromModel();
   }
@@ -529,19 +667,57 @@
     return stateResponse.json();
   }
 
-  async function sendOutputPowerToServer(outputChannel, nextPower) {
+  async function sendOutputPowerToServer(outputChannel, nextPower, powerCommandOptions) {
+    const commandOptions = powerCommandOptions || { startCountdownAfterChange: false, cancelCountdownBeforeChange: false };
+    if (commandOptions.cancelCountdownBeforeChange) {
+      clearOutputCountdown(outputChannel);
+    }
+
+    let commandSucceeded = false;
     await runServerCommand(async function sendPowerCommand() {
-      const powerResponse = await fetch("/api/output/power", {
+      await postOutputPowerCommand(outputChannel, nextPower);
+      commandSucceeded = true;
+      if (commandOptions.startCountdownAfterChange) {
+        startOutputCountdownIfConfigured(outputChannel, nextPower);
+      }
+    });
+
+    return commandSucceeded;
+  }
+
+  async function sendOutputEmergencyOffToServer(outputChannel) {
+    clearOutputCountdown(outputChannel);
+    applicationModel.errorText = "";
+    renderFromModel();
+
+    try {
+      const emergencyOffResponse = await fetch("/api/output/power", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: outputChannel, power: nextPower })
+        body: JSON.stringify({ channel: outputChannel, power: "off" })
       });
-      if (!powerResponse.ok) {
-        throw new Error(await powerResponse.text());
+      if (!emergencyOffResponse.ok) {
+        throw new Error(await emergencyOffResponse.text());
       }
 
-      applyStateFromServer(await powerResponse.json());
+      applyStateFromServer(await emergencyOffResponse.json(), true);
+    } catch (emergencyOffError) {
+      applicationModel.errorText = String(emergencyOffError);
+      renderFromModel();
+    }
+  }
+
+  async function postOutputPowerCommand(outputChannel, nextPower) {
+    const powerResponse = await fetch("/api/output/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: outputChannel, power: nextPower })
     });
+    if (!powerResponse.ok) {
+      throw new Error(await powerResponse.text());
+    }
+
+    applyStateFromServer(await powerResponse.json(), true);
   }
 
   async function sendOutputPWMToServer(outputChannel, nextPWM) {
@@ -555,7 +731,7 @@
         throw new Error(await pwmResponse.text());
       }
 
-      applyStateFromServer(await pwmResponse.json());
+      applyStateFromServer(await pwmResponse.json(), true);
     });
   }
 
@@ -571,7 +747,7 @@
       }
 
       delete applicationModel.editingInputLabelsByChannel[inputChannel];
-      applyStateFromServer(await labelResponse.json());
+      applyStateFromServer(await labelResponse.json(), true);
     });
   }
 
@@ -587,7 +763,7 @@
       }
 
       delete applicationModel.editingOutputLabelsByChannel[channel];
-      applyStateFromServer(await labelResponse.json());
+      applyStateFromServer(await labelResponse.json(), true);
     });
   }
 
@@ -631,8 +807,182 @@
   function hasActiveEditing() {
     const hasInputEditing = Object.keys(applicationModel.editingInputLabelsByChannel).length > 0;
     const hasOutputEditing = Object.keys(applicationModel.editingOutputLabelsByChannel).length > 0;
+    const hasOutputTimerEditing = Object.keys(applicationModel.editingOutputTimersByChannel).length > 0;
     const hasActiveOutputSlider = Object.keys(applicationModel.activeOutputSliderByChannel).length > 0;
-    return hasInputEditing || hasOutputEditing || hasActiveOutputSlider;
+    return hasInputEditing || hasOutputEditing || hasOutputTimerEditing || hasActiveOutputSlider;
+  }
+
+  function parseDurationSpec(durationSpecRawValue) {
+    const normalizedRawValue = String(durationSpecRawValue || "").trim();
+    if (normalizedRawValue === "") {
+      return { ok: true, milliseconds: 0, normalizedSpec: "0s" };
+    }
+
+    const durationMatch = normalizedRawValue.match(/^(\d+(?:[.,]\d+)?)(ns|ms|s|m|M|h|d|y|Y)?$/);
+    if (!durationMatch) {
+      return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
+    }
+
+    const parsedDurationAmountText = durationMatch[1].replace(",", ".");
+    const durationAmount = Number(parsedDurationAmountText);
+    if (!Number.isFinite(durationAmount) || durationAmount < 0) {
+      return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
+    }
+    const requestedDurationUnit = durationMatch[2] || "s";
+    const canonicalDurationUnit = requestedDurationUnit === "Y" ? "y" : requestedDurationUnit;
+
+    const secondsByUnit = {
+      ns: 1 / 1000000000,
+      ms: 1 / 1000,
+      s: 1,
+      m: 60,
+      M: 30 * 24 * 60 * 60,
+      h: 60 * 60,
+      d: 24 * 60 * 60,
+      y: 365 * 24 * 60 * 60
+    };
+
+    const durationInSeconds = durationAmount * secondsByUnit[canonicalDurationUnit];
+    const shouldRoundToWholeSeconds = canonicalDurationUnit === "m" || canonicalDurationUnit === "h" || canonicalDurationUnit === "d" || canonicalDurationUnit === "M" || canonicalDurationUnit === "y";
+    const normalizedDurationInSeconds = shouldRoundToWholeSeconds ? Math.ceil(durationInSeconds) : durationInSeconds;
+    if (!Number.isFinite(normalizedDurationInSeconds)) {
+      return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
+    }
+
+    const durationInMilliseconds = normalizedDurationInSeconds * 1000;
+    if (!Number.isFinite(durationInMilliseconds)) {
+      return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
+    }
+
+    return { ok: true, milliseconds: durationInMilliseconds, normalizedSpec: String(normalizedDurationInSeconds) + "s" };
+  }
+
+  function syncTimerDefaultsWithOutputs(outputsByChannel) {
+    Object.keys(outputsByChannel).forEach(function setTimerDefault(channelKey) {
+      if (!Object.prototype.hasOwnProperty.call(applicationModel.savedOutputTimersByChannel, channelKey)) {
+        applicationModel.savedOutputTimersByChannel[channelKey] = "0s";
+      }
+    });
+  }
+
+  function startOutputCountdownIfConfigured(outputChannel, requestedPower) {
+    const timerSpec = applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
+    const parsedTimerSpec = parseDurationSpec(timerSpec);
+    if (!parsedTimerSpec.ok || parsedTimerSpec.milliseconds <= 0) {
+      delete applicationModel.timerCountdownDeadlineByChannel[outputChannel];
+      return;
+    }
+
+    applicationModel.timerCountdownDeadlineByChannel[outputChannel] = {
+      deadlineAtMs: Date.now() + parsedTimerSpec.milliseconds,
+      reversePower: requestedPower === "on" ? "off" : "on"
+    };
+    ensureCountdownLoopStarted();
+  }
+
+  function ensureCountdownLoopStarted() {
+    if (window.outputCountdownTickerId) {
+      return;
+    }
+
+    window.outputCountdownTickerId = setInterval(function updateCountdowns() {
+      const channelKeysWithCountdown = Object.keys(applicationModel.timerCountdownDeadlineByChannel);
+      if (channelKeysWithCountdown.length === 0) {
+        clearInterval(window.outputCountdownTickerId);
+        window.outputCountdownTickerId = null;
+        return;
+      }
+
+      const nowMs = Date.now();
+      const channelsToToggle = [];
+      channelKeysWithCountdown.forEach(function collectFinishedCountdown(channelKey) {
+        const countdownState = applicationModel.timerCountdownDeadlineByChannel[channelKey];
+        if (nowMs >= countdownState.deadlineAtMs) {
+          channelsToToggle.push({ channel: Number(channelKey), reversePower: countdownState.reversePower });
+        }
+      });
+
+      channelsToToggle.forEach(function enqueueReversePower(toggleInfo) {
+        if (applicationModel.reverseToggleQueuedByChannel[toggleInfo.channel]) {
+          return;
+        }
+
+        applicationModel.reverseToggleQueuedByChannel[toggleInfo.channel] = true;
+        applicationModel.reverseToggleQueue.push(toggleInfo);
+      });
+      void processReverseToggleQueue();
+
+      if (!hasActiveEditing()) {
+        renderFromModel();
+      }
+    }, 200);
+  }
+
+  async function processReverseToggleQueue() {
+    if (applicationModel.reverseToggleProcessing) {
+      return;
+    }
+
+    applicationModel.reverseToggleProcessing = true;
+    try {
+      while (applicationModel.reverseToggleQueue.length > 0) {
+        const queuedReverseToggle = applicationModel.reverseToggleQueue.shift();
+        delete applicationModel.reverseToggleQueuedByChannel[queuedReverseToggle.channel];
+
+        const countdownState = applicationModel.timerCountdownDeadlineByChannel[queuedReverseToggle.channel];
+        if (!countdownState) {
+          continue;
+        }
+        if (Date.now() < countdownState.deadlineAtMs) {
+          continue;
+        }
+
+        const reverseToggleSucceeded = await sendOutputPowerToServer(
+          queuedReverseToggle.channel,
+          queuedReverseToggle.reversePower,
+          { startCountdownAfterChange: false, cancelCountdownBeforeChange: false }
+        );
+        if (reverseToggleSucceeded) {
+          delete applicationModel.timerCountdownDeadlineByChannel[queuedReverseToggle.channel];
+        }
+      }
+    } finally {
+      applicationModel.reverseToggleProcessing = false;
+    }
+  }
+
+  function clearEndedCountdowns(outputsByChannel) {
+    Object.keys(applicationModel.timerCountdownDeadlineByChannel).forEach(function clearMismatchedCountdown(channelKey) {
+      const outputState = outputsByChannel[channelKey];
+      if (!outputState) {
+        delete applicationModel.timerCountdownDeadlineByChannel[channelKey];
+        return;
+      }
+
+      const countdownState = applicationModel.timerCountdownDeadlineByChannel[channelKey];
+      if (outputState.power === countdownState.reversePower) {
+        delete applicationModel.timerCountdownDeadlineByChannel[channelKey];
+      }
+    });
+  }
+
+  function clearOutputCountdown(outputChannel) {
+    delete applicationModel.timerCountdownDeadlineByChannel[outputChannel];
+  }
+
+  function renderTimerDisplay(outputChannel) {
+    const countdownState = applicationModel.timerCountdownDeadlineByChannel[outputChannel];
+    if (!countdownState) {
+      return applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
+    }
+
+    const remainingMilliseconds = Math.max(0, countdownState.deadlineAtMs - Date.now());
+    return formatRemainingCountdown(remainingMilliseconds);
+  }
+
+  function formatRemainingCountdown(remainingMilliseconds) {
+    const wholeRemainingSeconds = Math.max(0, Math.ceil(remainingMilliseconds / 1000));
+    return String(wholeRemainingSeconds) + "s";
   }
 
   requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {
