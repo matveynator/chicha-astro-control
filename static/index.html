@@ -272,7 +272,10 @@
     editingOutputTimersByChannel: {},
     savedOutputTimersByChannel: {},
     timerCountdownDeadlineByChannel: {},
-    timerValidationMessageByChannel: {}
+    timerValidationMessageByChannel: {},
+    reverseToggleQueue: [],
+    reverseToggleQueuedByChannel: {},
+    reverseToggleProcessing: false
   };
   const outputMaxVoltage = 3.3;
 
@@ -436,7 +439,7 @@
       const configuredTimerSpec = applicationModel.savedOutputTimersByChannel[outputChannel] || "0s";
       const timerDraftSpec = isEditingOutputTimer ? applicationModel.editingOutputTimersByChannel[outputChannel] : configuredTimerSpec;
       const timerValidationMessage = applicationModel.timerValidationMessageByChannel[outputChannel] || "";
-      const timerFormatHintText = "Формат: 0.5s 1ms 1m 1M 1h 1d 1y. Поддержка ',' и '.', без суффикса = секунды.";
+      const timerFormatHintText = "Формат: 0.5s 1ms 1m 1M 1h 1d 1y. После сохранения всё переводится в целые секунды.";
 
       if (isEditingOutputLabel) {
         const outputNameEditorElement = document.createElement("div");
@@ -670,21 +673,16 @@
       clearOutputCountdown(outputChannel);
     }
 
+    let commandSucceeded = false;
     await runServerCommand(async function sendPowerCommand() {
-      const powerResponse = await fetch("/api/output/power", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: outputChannel, power: nextPower })
-      });
-      if (!powerResponse.ok) {
-        throw new Error(await powerResponse.text());
-      }
-
-      applyStateFromServer(await powerResponse.json(), true);
+      await postOutputPowerCommand(outputChannel, nextPower);
+      commandSucceeded = true;
       if (commandOptions.startCountdownAfterChange) {
         startOutputCountdownIfConfigured(outputChannel, nextPower);
       }
     });
+
+    return commandSucceeded;
   }
 
   async function sendOutputEmergencyOffToServer(outputChannel) {
@@ -707,6 +705,19 @@
       applicationModel.errorText = String(emergencyOffError);
       renderFromModel();
     }
+  }
+
+  async function postOutputPowerCommand(outputChannel, nextPower) {
+    const powerResponse = await fetch("/api/output/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: outputChannel, power: nextPower })
+    });
+    if (!powerResponse.ok) {
+      throw new Error(await powerResponse.text());
+    }
+
+    applyStateFromServer(await powerResponse.json(), true);
   }
 
   async function sendOutputPWMToServer(outputChannel, nextPWM) {
@@ -832,12 +843,17 @@
     };
 
     const durationInSeconds = durationAmount * secondsByUnit[canonicalDurationUnit];
-    const durationInMilliseconds = durationInSeconds * 1000;
+    const roundedDurationInSeconds = Math.ceil(durationInSeconds);
+    if (!Number.isFinite(roundedDurationInSeconds)) {
+      return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
+    }
+
+    const durationInMilliseconds = roundedDurationInSeconds * 1000;
     if (!Number.isFinite(durationInMilliseconds)) {
       return { ok: false, milliseconds: 0, normalizedSpec: "0s" };
     }
 
-    return { ok: true, milliseconds: durationInMilliseconds, normalizedSpec: parsedDurationAmountText + canonicalDurationUnit };
+    return { ok: true, milliseconds: durationInMilliseconds, normalizedSpec: String(roundedDurationInSeconds) + "s" };
   }
 
   function syncTimerDefaultsWithOutputs(outputsByChannel) {
@@ -885,15 +901,53 @@
         }
       });
 
-      channelsToToggle.forEach(function triggerReversePower(toggleInfo) {
-        delete applicationModel.timerCountdownDeadlineByChannel[toggleInfo.channel];
-        void sendOutputPowerToServer(toggleInfo.channel, toggleInfo.reversePower, { startCountdownAfterChange: false, cancelCountdownBeforeChange: false });
+      channelsToToggle.forEach(function enqueueReversePower(toggleInfo) {
+        if (applicationModel.reverseToggleQueuedByChannel[toggleInfo.channel]) {
+          return;
+        }
+
+        applicationModel.reverseToggleQueuedByChannel[toggleInfo.channel] = true;
+        applicationModel.reverseToggleQueue.push(toggleInfo);
       });
+      void processReverseToggleQueue();
 
       if (!hasActiveEditing()) {
         renderFromModel();
       }
     }, 200);
+  }
+
+  async function processReverseToggleQueue() {
+    if (applicationModel.reverseToggleProcessing) {
+      return;
+    }
+
+    applicationModel.reverseToggleProcessing = true;
+    try {
+      while (applicationModel.reverseToggleQueue.length > 0) {
+        const queuedReverseToggle = applicationModel.reverseToggleQueue.shift();
+        delete applicationModel.reverseToggleQueuedByChannel[queuedReverseToggle.channel];
+
+        const countdownState = applicationModel.timerCountdownDeadlineByChannel[queuedReverseToggle.channel];
+        if (!countdownState) {
+          continue;
+        }
+        if (Date.now() < countdownState.deadlineAtMs) {
+          continue;
+        }
+
+        const reverseToggleSucceeded = await sendOutputPowerToServer(
+          queuedReverseToggle.channel,
+          queuedReverseToggle.reversePower,
+          { startCountdownAfterChange: false, cancelCountdownBeforeChange: false }
+        );
+        if (reverseToggleSucceeded) {
+          delete applicationModel.timerCountdownDeadlineByChannel[queuedReverseToggle.channel];
+        }
+      }
+    } finally {
+      applicationModel.reverseToggleProcessing = false;
+    }
   }
 
   function clearEndedCountdowns(outputsByChannel) {
@@ -926,49 +980,8 @@
   }
 
   function formatRemainingCountdown(remainingMilliseconds) {
-    const millisecondsPerSecond = 1000;
-    const millisecondsPerMinute = 60 * millisecondsPerSecond;
-    const millisecondsPerHour = 60 * millisecondsPerMinute;
-    const millisecondsPerDay = 24 * millisecondsPerHour;
-    const millisecondsPerMonth = 30 * millisecondsPerDay;
-    const millisecondsPerYear = 365 * millisecondsPerDay;
-
-    if (remainingMilliseconds >= millisecondsPerYear) {
-      return formatCountdownUnit(remainingMilliseconds / millisecondsPerYear, "y");
-    }
-    if (remainingMilliseconds >= millisecondsPerMonth) {
-      return formatCountdownUnit(remainingMilliseconds / millisecondsPerMonth, "M");
-    }
-    if (remainingMilliseconds >= millisecondsPerDay) {
-      return formatCountdownUnit(remainingMilliseconds / millisecondsPerDay, "d");
-    }
-    if (remainingMilliseconds >= millisecondsPerHour) {
-      return formatCountdownUnit(remainingMilliseconds / millisecondsPerHour, "h");
-    }
-    if (remainingMilliseconds >= millisecondsPerMinute) {
-      return formatCountdownUnit(remainingMilliseconds / millisecondsPerMinute, "m");
-    }
-    if (remainingMilliseconds >= millisecondsPerSecond) {
-      return formatCountdownUnit(remainingMilliseconds / millisecondsPerSecond, "s");
-    }
-
-    return formatCountdownUnit(remainingMilliseconds, "ms");
-  }
-
-  function formatCountdownUnit(durationAmount, durationUnit) {
-    if (durationUnit === "ms") {
-      return String(Math.ceil(durationAmount)) + durationUnit;
-    }
-
-    if (durationAmount >= 100) {
-      return String(Math.ceil(durationAmount)) + durationUnit;
-    }
-
-    if (durationAmount >= 10) {
-      return durationAmount.toFixed(2).replace(/\.?0+$/, "") + durationUnit;
-    }
-
-    return durationAmount.toFixed(4).replace(/\.?0+$/, "") + durationUnit;
+    const wholeRemainingSeconds = Math.max(0, Math.ceil(remainingMilliseconds / 1000));
+    return String(wholeRemainingSeconds) + "s";
   }
 
   requestStateFromServer().then(applyStateFromServer).catch(function handleInitialError(initialError) {
