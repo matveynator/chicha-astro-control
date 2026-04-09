@@ -818,7 +818,7 @@
       const enableOutputButtonElement = document.createElement("button");
       enableOutputButtonElement.className = outputState.power === "on" ? "button-on active" : "button-on";
       enableOutputButtonElement.textContent = "ON";
-      enableOutputButtonElement.disabled = isOutputChannelBusy(outputChannel);
+      enableOutputButtonElement.disabled = false;
       enableOutputButtonElement.addEventListener("click", function handleEnableOutput() {
         void sendOutputPowerToServer(outputChannel, "on", { startCountdownAfterChange: true, cancelCountdownBeforeChange: false });
       });
@@ -826,7 +826,7 @@
       const disableOutputButtonElement = document.createElement("button");
       disableOutputButtonElement.className = outputState.power === "off" ? "button-off active" : "button-off";
       disableOutputButtonElement.textContent = "OFF";
-      disableOutputButtonElement.disabled = isOutputChannelBusy(outputChannel);
+      disableOutputButtonElement.disabled = false;
       disableOutputButtonElement.addEventListener("click", function handleEmergencyDisableOutput() {
         void sendOutputEmergencyOffToServer(outputChannel);
       });
@@ -843,7 +843,7 @@
       pwmSliderElement.max = "100";
       pwmSliderElement.step = "1";
       pwmSliderElement.value = String(outputState.pwm);
-      pwmSliderElement.disabled = isOutputChannelBusy(outputChannel);
+      pwmSliderElement.disabled = false;
       pwmSliderElement.addEventListener("pointerdown", function handleOutputSliderPointerDown() {
         applicationModel.activeOutputSliderByChannel[outputChannel] = true;
       });
@@ -1057,14 +1057,6 @@
       clearOutputCountdown(outputChannel);
     }
 
-    if (isOutputChannelBusy(outputChannel)) {
-      return false;
-    }
-
-    applicationModel.pendingOutputPowerByChannel[outputChannel] = true;
-    applicationModel.errorText = "";
-    renderFromModel();
-
     sendOutputControlCommand(outputChannel, { kind: "power", power: nextPower });
     if (commandOptions.startCountdownAfterChange) {
       startOutputCountdownIfConfigured(outputChannel, nextPower);
@@ -1073,11 +1065,6 @@
   }
 
   async function sendOutputEmergencyOffToServer(outputChannel) {
-    if (isOutputChannelBusy(outputChannel)) {
-      return;
-    }
-
-    applicationModel.pendingOutputPowerByChannel[outputChannel] = true;
     clearOutputCountdown(outputChannel);
     applicationModel.errorText = "";
     renderFromModel();
@@ -1086,14 +1073,6 @@
   }
 
   async function sendOutputPWMToServer(outputChannel, nextPWM) {
-    if (isOutputChannelBusy(outputChannel)) {
-      return;
-    }
-
-    applicationModel.pendingOutputPWMByChannel[outputChannel] = true;
-    applicationModel.errorText = "";
-    renderFromModel();
-
     sendOutputControlCommand(outputChannel, { kind: "pwm", pwm: nextPWM });
   }
 
@@ -1146,13 +1125,6 @@
 
   function sortAscendingNumbers(leftNumber, rightNumber) {
     return leftNumber - rightNumber;
-  }
-
-  function isOutputChannelBusy(outputChannel) {
-    return Boolean(
-      applicationModel.pendingOutputPowerByChannel[outputChannel] ||
-      applicationModel.pendingOutputPWMByChannel[outputChannel]
-    );
   }
 
   function formatOutputVoltage(outputPWMPercent) {
