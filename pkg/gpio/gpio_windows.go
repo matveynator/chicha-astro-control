@@ -4,6 +4,8 @@ package gpio
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"unsafe"
 
@@ -16,7 +18,14 @@ const (
 	vecowGPIOConfigMask         uint16 = 0xFF00
 )
 
+var vecowDLLCandidates = []string{
+	"ECX1K.dll",
+	"Vecow.dll",
+	"drv.dll",
+}
+
 type windowsAdapter struct {
+	dllName     string
 	dll         *windows.LazyDLL
 	procInitial *windows.LazyProc
 	procConfig  *windows.LazyProc
@@ -36,6 +45,7 @@ func DefaultOutputTemplate() string {
 
 func Open(config Config) (Adapter, RuntimeMode, error) {
 	_ = config
+
 	adapter, err := openWindowsAdapter()
 	if err != nil {
 		return nil, RuntimeMode{}, err
@@ -44,12 +54,39 @@ func Open(config Config) (Adapter, RuntimeMode, error) {
 }
 
 func openWindowsAdapter() (*windowsAdapter, error) {
-	dll := windows.NewLazyDLL("ECX1K.dll")
+	for _, dllName := range windowsDLLSearchOrder() {
+		adapter, err := tryOpenWindowsAdapter(dllName)
+		if err == nil {
+			return adapter, nil
+		}
+	}
+
+	return nil, fmt.Errorf(
+		"initialize Vecow GPIO failed: none of DLLs can be used (%s)",
+		strings.Join(windowsDLLSearchOrder(), ", "),
+	)
+}
+
+func windowsDLLSearchOrder() []string {
+	customDLL := strings.TrimSpace(os.Getenv("CHICHA_GPIO_WINDOWS_DLL"))
+	if customDLL == "" {
+		return vecowDLLCandidates
+	}
+
+	searchOrder := make([]string, 0, len(vecowDLLCandidates)+1)
+	searchOrder = append(searchOrder, customDLL)
+	searchOrder = append(searchOrder, vecowDLLCandidates...)
+	return searchOrder
+}
+
+func tryOpenWindowsAdapter(dllName string) (*windowsAdapter, error) {
+	dll := windows.NewLazyDLL(dllName)
 	if err := dll.Load(); err != nil {
-		return nil, fmt.Errorf("load ECX1K.dll: %w", err)
+		return nil, fmt.Errorf("load %s: %w", dllName, err)
 	}
 
 	adapter := &windowsAdapter{
+		dllName:     dllName,
 		dll:         dll,
 		procInitial: dll.NewProc("Initial"),
 		procConfig:  dll.NewProc("SetGPIOConfig"),
@@ -59,19 +96,19 @@ func openWindowsAdapter() (*windowsAdapter, error) {
 
 	if err := adapter.procInitial.Find(); err != nil {
 		_ = releaseLazyDLL(adapter.dll)
-		return nil, fmt.Errorf("resolve Initial: %w", err)
+		return nil, fmt.Errorf("resolve Initial in %s: %w", dllName, err)
 	}
 	if err := adapter.procConfig.Find(); err != nil {
 		_ = releaseLazyDLL(adapter.dll)
-		return nil, fmt.Errorf("resolve SetGPIOConfig: %w", err)
+		return nil, fmt.Errorf("resolve SetGPIOConfig in %s: %w", dllName, err)
 	}
 	if err := adapter.procGetGPIO.Find(); err != nil {
 		_ = releaseLazyDLL(adapter.dll)
-		return nil, fmt.Errorf("resolve GetGPIO: %w", err)
+		return nil, fmt.Errorf("resolve GetGPIO in %s: %w", dllName, err)
 	}
 	if err := adapter.procSetGPIO.Find(); err != nil {
 		_ = releaseLazyDLL(adapter.dll)
-		return nil, fmt.Errorf("resolve SetGPIO: %w", err)
+		return nil, fmt.Errorf("resolve SetGPIO in %s: %w", dllName, err)
 	}
 
 	if err := adapter.callInitial(); err != nil {
@@ -136,7 +173,7 @@ func (adapter *windowsAdapter) Close() error {
 		return nil
 	}
 	if err := releaseLazyDLL(adapter.dll); err != nil {
-		return fmt.Errorf("release ECX1K.dll: %w", err)
+		return fmt.Errorf("release %s: %w", adapter.dllName, err)
 	}
 	adapter.dll = nil
 	return nil
@@ -146,12 +183,15 @@ func releaseLazyDLL(dll *windows.LazyDLL) error {
 	if dll == nil {
 		return nil
 	}
+
 	handle := dll.Handle()
 	if handle == 0 {
 		return nil
 	}
+
 	return windows.FreeLibrary(windows.Handle(handle))
 }
+
 func (adapter *windowsAdapter) callInitial() error {
 	result, _, _ := adapter.procInitial.Call(vecowInitIsolateNonIsolated, vecowInitDIONPN)
 	if result != 0 {
