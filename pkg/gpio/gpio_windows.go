@@ -58,13 +58,17 @@ func Open(config Config) (Adapter, RuntimeMode, error) {
 
 func openWindowsAdapter() (*windowsAdapter, RuntimeMode, error) {
 	searchOrder := windowsDLLSearchOrder()
-	attemptErrors := make([]string, 0, len(searchOrder))
+	driverProbeEvents := make([]string, 0, len(searchOrder))
 	for _, dllName := range searchOrder {
 		adapter, err := tryOpenWindowsAdapter(dllName)
 		if err == nil {
-			return adapter, RuntimeMode{ActiveDriver: filepath.Base(dllName), DriverProbeLog: strings.Join(attemptErrors, "; ")}, nil
+			driverProbeEvents = append(driverProbeEvents, fmt.Sprintf("ok:%s", filepath.Base(dllName)))
+			return adapter, RuntimeMode{
+				ActiveDriver:   filepath.Base(dllName),
+				DriverProbeLog: strings.Join(driverProbeEvents, "; "),
+			}, nil
 		}
-		attemptErrors = append(attemptErrors, fmt.Sprintf("%s: %v", filepath.Base(dllName), err))
+		driverProbeEvents = append(driverProbeEvents, fmt.Sprintf("fail:%s (%v)", filepath.Base(dllName), err))
 	}
 
 	return nil, RuntimeMode{}, fmt.Errorf(
