@@ -96,10 +96,11 @@ type ioPaths struct {
 }
 
 type runtimeState struct {
-	TestMode        bool   `json:"test_mode"`
-	Message         string `json:"message"`
-	MessageKey      string `json:"message_key"`
-	DLLOverridePath string `json:"dll_override_path"`
+	TestMode             bool   `json:"test_mode"`
+	Message              string `json:"message"`
+	MessageKey           string `json:"message_key"`
+	DLLOverridePath      string `json:"dll_override_path"`
+	DLLOverrideAvailable bool   `json:"dll_override_available"`
 }
 
 type savedOutputState struct {
@@ -346,6 +347,7 @@ func logRuntimeMode(mode gpio.RuntimeMode, resolvedIOPaths ioPaths) {
 
 func buildRuntimeStateForUI(mode gpio.RuntimeMode, dllOverridePath string) runtimeState {
 	assembledState := runtimeState{}
+	assembledState.DLLOverrideAvailable = runtime.GOOS == "windows"
 	if mode.InputSimulation || mode.OutputSimulation {
 		assembledState.TestMode = true
 		assembledState.MessageKey = "runtime_demo_mode"
