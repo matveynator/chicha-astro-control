@@ -32,8 +32,8 @@
     "runtime_probe_log_close_demo": "Read log and continue in demo mode",
     "runtime_dll_override_placeholder": "Selected DLL override path",
     "runtime_dll_override_choose": "Choose",
-    "runtime_dll_override_apply": "Load GPU drivers",
-    "runtime_dll_override_saved": "GPU driver check finished. See the log above.",
+    "runtime_dll_override_apply": "Load GPIO/DIO drivers",
+    "runtime_dll_override_saved": "GPIO/DIO driver check finished. See the log above.",
     "runtime_dll_override_error_missing_file": "Select a DLL file before upload."
   },
   "ru": {
@@ -69,8 +69,8 @@
     "runtime_probe_log_close_demo": "Прочитать лог и запустить демо-режим",
     "runtime_dll_override_placeholder": "Путь к выбранной DLL",
     "runtime_dll_override_choose": "Выбрать",
-    "runtime_dll_override_apply": "Подгрузить драйверы GPU",
-    "runtime_dll_override_saved": "Проверка драйверов GPU завершена. Смотрите лог выше.",
+    "runtime_dll_override_apply": "Подгрузить драйверы GPIO/DIO",
+    "runtime_dll_override_saved": "Проверка драйверов GPIO/DIO завершена. Смотрите лог выше.",
     "runtime_dll_override_error_missing_file": "Перед загрузкой выберите DLL-файл."
   },
   "de": {
@@ -107,7 +107,7 @@
     "runtime_dll_override_placeholder": "Selected DLL override path",
     "runtime_dll_override_choose": "Choose",
     "runtime_dll_override_apply": "Upload and save DLL",
-    "runtime_dll_override_saved": "GPU driver check finished. See the log above.",
+    "runtime_dll_override_saved": "GPIO/DIO driver check finished. See the log above.",
     "runtime_dll_override_error_missing_file": "Select a DLL file before upload."
   },
   "fr": {
@@ -144,7 +144,7 @@
     "runtime_dll_override_placeholder": "Selected DLL override path",
     "runtime_dll_override_choose": "Choose",
     "runtime_dll_override_apply": "Upload and save DLL",
-    "runtime_dll_override_saved": "GPU driver check finished. See the log above.",
+    "runtime_dll_override_saved": "GPIO/DIO driver check finished. See the log above.",
     "runtime_dll_override_error_missing_file": "Select a DLL file before upload."
   },
   "ja": {
@@ -181,7 +181,7 @@
     "runtime_dll_override_placeholder": "Selected DLL override path",
     "runtime_dll_override_choose": "Choose",
     "runtime_dll_override_apply": "Upload and save DLL",
-    "runtime_dll_override_saved": "GPU driver check finished. See the log above.",
+    "runtime_dll_override_saved": "GPIO/DIO driver check finished. See the log above.",
     "runtime_dll_override_error_missing_file": "Select a DLL file before upload."
   },
   "uk": {
@@ -218,7 +218,7 @@
     "runtime_dll_override_placeholder": "Selected DLL override path",
     "runtime_dll_override_choose": "Choose",
     "runtime_dll_override_apply": "Upload and save DLL",
-    "runtime_dll_override_saved": "GPU driver check finished. See the log above.",
+    "runtime_dll_override_saved": "GPIO/DIO driver check finished. See the log above.",
     "runtime_dll_override_error_missing_file": "Select a DLL file before upload."
   }
 }
