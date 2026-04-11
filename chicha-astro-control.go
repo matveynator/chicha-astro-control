@@ -601,13 +601,16 @@ func runStateOwner(stateCommands <-chan stateCommand, gpioAdapter *hotSwapGPIOAd
 				command.reply <- stateReply{state: cloneState(state), err: swapErr}
 				continue
 			}
-			currentRuntimeMode = nextRuntimeMode
-			currentSettings.DLLOverridePath = dllOverridePath
-			state.Runtime = buildRuntimeStateForUI(currentRuntimeMode, currentSettings.DLLOverridePath)
-			if err := saveSettings(settingsFile, state, currentSettings.DLLOverridePath); err != nil {
+
+			// Persist the accepted DLL override before mutating in-memory runtime state.
+			if err := saveSettings(settingsFile, state, dllOverridePath); err != nil {
 				command.reply <- stateReply{state: cloneState(state), err: err}
 				continue
 			}
+
+			currentRuntimeMode = nextRuntimeMode
+			currentSettings.DLLOverridePath = dllOverridePath
+			state.Runtime = buildRuntimeStateForUI(currentRuntimeMode, currentSettings.DLLOverridePath)
 			refreshInputSignals(&state, gpioAdapter)
 			for _, configuredOutput := range state.Outputs {
 				outputPWMController.Apply(configuredOutput)
