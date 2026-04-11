@@ -175,9 +175,10 @@ func main() {
 	defer cleanupWindowsDriverDirectory()
 
 	gpioAdapter, runtimeMode, err := gpio.Open(gpio.Config{
-		InputTemplate:  resolvedIOPaths.inputTemplate,
-		OutputTemplate: resolvedIOPaths.outputTemplate,
-		WindowsDLLPath: loadedSettings.DLLOverridePath,
+		InputTemplate:    resolvedIOPaths.inputTemplate,
+		OutputTemplate:   resolvedIOPaths.outputTemplate,
+		WindowsDLLPath:   loadedSettings.DLLOverridePath,
+		StrictWindowsDLL: strings.TrimSpace(loadedSettings.DLLOverridePath) != "",
 	})
 	if err != nil {
 		log.Printf("startup: GPIO init failed, continue in simulation mode: %v", err)
@@ -582,9 +583,10 @@ func runStateOwner(stateCommands <-chan stateCommand, gpioAdapter *hotSwapGPIOAd
 			}
 
 			nextAdapter, nextRuntimeMode, openErr := gpio.Open(gpio.Config{
-				InputTemplate:  resolvedIOPaths.inputTemplate,
-				OutputTemplate: resolvedIOPaths.outputTemplate,
-				WindowsDLLPath: dllOverridePath,
+				InputTemplate:    resolvedIOPaths.inputTemplate,
+				OutputTemplate:   resolvedIOPaths.outputTemplate,
+				WindowsDLLPath:   dllOverridePath,
+				StrictWindowsDLL: true,
 			})
 			if openErr != nil {
 				currentRuntimeMode = gpio.RuntimeMode{
