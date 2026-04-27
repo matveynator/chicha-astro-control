@@ -108,6 +108,11 @@ type guidingCatalogNearestRequest struct {
 	DeclinationDeg     float64 `json:"declination_deg"`
 }
 
+type guidingNativeFileResponse struct {
+	FileName string `json:"file_name"`
+	DataURL  string `json:"data_url"`
+}
+
 type ioPaths struct {
 	inputTemplate  string
 	outputTemplate string
@@ -241,6 +246,7 @@ func main() {
 	http.HandleFunc("/api/guiding/analyze", handleGuidingAnalyze)
 	http.HandleFunc("/api/guiding/catalog/search", handleGuidingCatalogSearch)
 	http.HandleFunc("/api/guiding/catalog/nearest", handleGuidingCatalogNearest)
+	http.HandleFunc("/api/guiding/native-open-image", handleGuidingNativeImageOpen)
 	http.HandleFunc("/", handleRequest)
 
 	httpListener, address := listenOnFirstAvailablePort(defaultStartPort)
@@ -1578,6 +1584,63 @@ func handleGuidingCatalogNearest(writer http.ResponseWriter, request *http.Reque
 	}
 
 	writeJSON(writer, guiding.FindNearestStar(nearestRequest.RightAscensionHour, nearestRequest.DeclinationDeg))
+}
+
+func handleGuidingNativeImageOpen(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeJSONError(writer, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if runtime.GOOS != "darwin" {
+		writeJSONError(writer, http.StatusNotImplemented, "native image picker is available only on macOS")
+		return
+	}
+
+	selectedImagePath, err := selectImageFilePathOnMacOS()
+	if err != nil {
+		writeJSONError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	imageBytes, err := os.ReadFile(selectedImagePath)
+	if err != nil {
+		writeJSONError(writer, http.StatusBadRequest, "failed to read selected image")
+		return
+	}
+
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(selectedImagePath)))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(imageBytes)
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		writeJSONError(writer, http.StatusBadRequest, "selected file must be an image")
+		return
+	}
+
+	writeJSON(writer, guidingNativeFileResponse{
+		FileName: filepath.Base(selectedImagePath),
+		DataURL:  "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(imageBytes),
+	})
+}
+
+func selectImageFilePathOnMacOS() (string, error) {
+	selectionCommand := exec.Command(
+		"osascript",
+		"-e", `set selectedFile to choose file with prompt "Select guiding image frame" of type {"public.image"}`,
+		"-e", `POSIX path of selectedFile`,
+	)
+
+	selectedPathRaw, err := selectionCommand.Output()
+	if err != nil {
+		return "", errors.New("file selection was cancelled")
+	}
+
+	selectedPath := strings.TrimSpace(string(selectedPathRaw))
+	if selectedPath == "" {
+		return "", errors.New("no file selected")
+	}
+
+	return selectedPath, nil
 }
 
 func decodeBase64ImagePayload(imagePayload string) ([]byte, error) {
