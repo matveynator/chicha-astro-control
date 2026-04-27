@@ -1844,6 +1844,7 @@
       }
 
       const photoCatalogPayload = await identifyResponse.json();
+      const activeCatalogProvider = String(photoCatalogPayload.catalog_provider || "");
       const centerStar = photoCatalogPayload.center_star || {};
       const centerCatalogMatches = Array.isArray(centerStar.catalog_matches) ? centerStar.catalog_matches : [];
       if (centerCatalogMatches.length === 0) {
@@ -1864,7 +1865,8 @@
       });
 
       applicationModel.guidingCorrectionHint =
-        "Photo catalog: center≈" + centerBestMatch.name + " (" + centerBestMatch.constellation + "). Nearby: " + surroundingDescriptions.join(", ");
+        "Photo catalog [" + activeCatalogProvider + "]: center≈" + centerBestMatch.name +
+        " (" + centerBestMatch.constellation + "). Nearby: " + surroundingDescriptions.join(", ");
       renderGuidingLog();
     } catch (identifyError) {
       applicationModel.guidingCorrectionHint = "Photo catalog search failed: " + String(identifyError);

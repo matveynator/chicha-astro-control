@@ -8,13 +8,15 @@ import (
 )
 
 const (
-	defaultPhotoSearchStarLimit     = 6
-	defaultCatalogMatchesPerStar    = 3
-	minimumPhotoSearchStarLimit     = 3
-	maximumPhotoSearchStarLimit     = 12
-	minimumCatalogMatchesPerStar    = 1
-	maximumCatalogMatchesPerStar    = 5
-	minimumPhotoCandidateSeparation = 8.0
+	defaultPhotoSearchStarLimit      = 6
+	defaultCatalogMatchesPerStar     = 3
+	minimumPhotoSearchStarLimit      = 3
+	maximumPhotoSearchStarLimit      = 12
+	minimumCatalogMatchesPerStar     = 1
+	maximumCatalogMatchesPerStar     = 5
+	minimumPhotoCandidateSeparation  = 8.0
+	defaultMatchToleranceDegrees     = 4.0
+	defaultCatalogNeighborRadiusDegs = 35.0
 )
 
 type CatalogMatch struct {
@@ -22,6 +24,7 @@ type CatalogMatch struct {
 	Constellation   string  `json:"constellation"`
 	VisualMagnitude float64 `json:"visual_magnitude"`
 	MagnitudeDelta  float64 `json:"magnitude_delta"`
+	AngularErrorDeg float64 `json:"angular_error_deg"`
 }
 
 type DetectedPhotoStar struct {
@@ -33,6 +36,7 @@ type DetectedPhotoStar struct {
 }
 
 type PhotoCatalogResult struct {
+	CatalogProvider  string              `json:"catalog_provider"`
 	FrameWidth       int                 `json:"frame_width"`
 	FrameHeight      int                 `json:"frame_height"`
 	DetectedCount    int                 `json:"detected_count"`
@@ -46,6 +50,19 @@ type rawPhotoStar struct {
 	brightness float64
 }
 
+type vector2 struct {
+	x float64
+	y float64
+}
+
+type catalogAlignment struct {
+	centerCandidate    StarCatalogEntry
+	surroundingMatches map[int]StarCatalogEntry
+	errorByDetected    map[int]float64
+}
+
+// IdentifyStarsFromPhoto detects bright stars and solves the center-of-frame direction
+// by matching relative geometry of several stars against the active catalog provider.
 func IdentifyStarsFromPhoto(frame image.Image, maxStars int, maxCatalogMatches int) (PhotoCatalogResult, error) {
 	bounds := frame.Bounds()
 	frameWidth := bounds.Dx()
@@ -75,6 +92,33 @@ func IdentifyStarsFromPhoto(frame image.Image, maxStars int, maxCatalogMatches i
 		return PhotoCatalogResult{}, errors.New("no stars found in frame")
 	}
 
+	detectedStars := buildDetectedPhotoStars(selectedCandidates, frameWidth, frameHeight)
+	alignment := solveCatalogAlignment(detectedStars)
+	if alignment.centerCandidate.Name == "" {
+		return PhotoCatalogResult{}, errors.New("failed to match star pattern with catalog")
+	}
+
+	for detectedIndex := range detectedStars {
+		primaryMatch, hasPrimaryMatch := alignment.surroundingMatches[detectedIndex]
+		if detectedIndex == 0 {
+			primaryMatch = alignment.centerCandidate
+			hasPrimaryMatch = true
+		}
+		predictedError := alignment.errorByDetected[detectedIndex]
+		detectedStars[detectedIndex].CatalogMatches = buildCatalogMatchesForDetectedStar(detectedStars[detectedIndex], alignment.centerCandidate, primaryMatch, hasPrimaryMatch, predictedError, maxCatalogMatches)
+	}
+
+	return PhotoCatalogResult{
+		CatalogProvider:  ActiveCatalogProvider().ID,
+		FrameWidth:       frameWidth,
+		FrameHeight:      frameHeight,
+		DetectedCount:    len(detectedStars),
+		CenterStar:       detectedStars[0],
+		SurroundingStars: detectedStars[1:],
+	}, nil
+}
+
+func buildDetectedPhotoStars(selectedCandidates []rawPhotoStar, frameWidth int, frameHeight int) []DetectedPhotoStar {
 	frameCenterX := float64(frameWidth-1) / 2
 	frameCenterY := float64(frameHeight-1) / 2
 	detectedStars := make([]DetectedPhotoStar, 0, len(selectedCandidates))
@@ -85,21 +129,191 @@ func IdentifyStarsFromPhoto(frame image.Image, maxStars int, maxCatalogMatches i
 			Y:                float64(candidate.y),
 			Brightness:       candidate.brightness,
 			DistanceToCenter: distanceToCenter,
-			CatalogMatches:   findCatalogMatchesByBrightness(candidate.brightness, maxCatalogMatches),
 		})
 	}
 
 	sort.Slice(detectedStars, func(leftIndex int, rightIndex int) bool {
 		return detectedStars[leftIndex].DistanceToCenter < detectedStars[rightIndex].DistanceToCenter
 	})
+	return detectedStars
+}
 
-	return PhotoCatalogResult{
-		FrameWidth:       frameWidth,
-		FrameHeight:      frameHeight,
-		DetectedCount:    len(detectedStars),
-		CenterStar:       detectedStars[0],
-		SurroundingStars: detectedStars[1:],
-	}, nil
+func solveCatalogAlignment(detectedStars []DetectedPhotoStar) catalogAlignment {
+	if len(detectedStars) < 3 {
+		return catalogAlignment{}
+	}
+
+	catalogEntries := ActiveCatalogProvider().Entries
+	if len(catalogEntries) < 3 {
+		return catalogAlignment{}
+	}
+
+	bestScore := math.Inf(-1)
+	bestAlignment := catalogAlignment{}
+	centerDetected := detectedStars[0]
+	centerVector := vector2{x: centerDetected.X, y: centerDetected.Y}
+
+	for _, centerCandidate := range catalogEntries {
+		neighborCandidates := collectCatalogNeighbors(centerCandidate, catalogEntries, defaultCatalogNeighborRadiusDegs)
+		if len(neighborCandidates) < 2 {
+			continue
+		}
+
+		for detectedReferenceIndex := 1; detectedReferenceIndex < len(detectedStars); detectedReferenceIndex += 1 {
+			referenceDetectedVector := vectorFromPoints(centerVector, vector2{x: detectedStars[detectedReferenceIndex].X, y: detectedStars[detectedReferenceIndex].Y})
+			referenceDetectedLength := vectorLength(referenceDetectedVector)
+			if referenceDetectedLength < 0.0001 {
+				continue
+			}
+
+			for _, referenceCatalog := range neighborCandidates {
+				referenceCatalogVector := catalogOffsetVector(centerCandidate, referenceCatalog)
+				referenceCatalogLength := vectorLength(referenceCatalogVector)
+				if referenceCatalogLength < 0.0001 {
+					continue
+				}
+
+				scale := referenceCatalogLength / referenceDetectedLength
+				rotationRadians := vectorAngle(referenceCatalogVector) - vectorAngle(referenceDetectedVector)
+				candidateScore, matchedCatalogByDetectedIndex, errorByDetectedIndex := scoreAlignmentHypothesis(centerCandidate, neighborCandidates, detectedStars, centerVector, scale, rotationRadians)
+				if candidateScore > bestScore {
+					bestScore = candidateScore
+					bestAlignment = catalogAlignment{
+						centerCandidate:    centerCandidate,
+						surroundingMatches: matchedCatalogByDetectedIndex,
+						errorByDetected:    errorByDetectedIndex,
+					}
+				}
+			}
+		}
+	}
+
+	if bestScore < 12 {
+		return catalogAlignment{}
+	}
+	return bestAlignment
+}
+
+func scoreAlignmentHypothesis(centerCandidate StarCatalogEntry, neighborCandidates []StarCatalogEntry, detectedStars []DetectedPhotoStar, centerVector vector2, scale float64, rotationRadians float64) (float64, map[int]StarCatalogEntry, map[int]float64) {
+	matchedCatalogByDetectedIndex := make(map[int]StarCatalogEntry)
+	errorByDetectedIndex := make(map[int]float64)
+	usedCatalogNames := map[string]bool{centerCandidate.Name: true}
+	totalError := 0.0
+	matchedCount := 0.0
+
+	for detectedIndex := 1; detectedIndex < len(detectedStars); detectedIndex += 1 {
+		detectedOffsetVector := vectorFromPoints(centerVector, vector2{x: detectedStars[detectedIndex].X, y: detectedStars[detectedIndex].Y})
+		predictedCatalogOffset := rotateVector(scaleVector(detectedOffsetVector, scale), rotationRadians)
+
+		bestNeighborDistance := math.Inf(1)
+		bestNeighbor := StarCatalogEntry{}
+		for _, catalogNeighbor := range neighborCandidates {
+			if usedCatalogNames[catalogNeighbor.Name] {
+				continue
+			}
+			catalogNeighborOffset := catalogOffsetVector(centerCandidate, catalogNeighbor)
+			distanceError := vectorLength(subtractVectors(catalogNeighborOffset, predictedCatalogOffset))
+			if distanceError < bestNeighborDistance {
+				bestNeighborDistance = distanceError
+				bestNeighbor = catalogNeighbor
+			}
+		}
+
+		if bestNeighbor.Name == "" || bestNeighborDistance > defaultMatchToleranceDegrees {
+			continue
+		}
+
+		usedCatalogNames[bestNeighbor.Name] = true
+		matchedCatalogByDetectedIndex[detectedIndex] = bestNeighbor
+		errorByDetectedIndex[detectedIndex] = bestNeighborDistance
+		totalError += bestNeighborDistance
+		matchedCount += 1.0
+	}
+
+	if matchedCount == 0 {
+		return math.Inf(-1), matchedCatalogByDetectedIndex, errorByDetectedIndex
+	}
+	averageError := totalError / matchedCount
+	score := (matchedCount * 10.0) - (averageError * 1.5)
+	errorByDetectedIndex[0] = averageError
+	return score, matchedCatalogByDetectedIndex, errorByDetectedIndex
+}
+
+func buildCatalogMatchesForDetectedStar(detectedStar DetectedPhotoStar, centerCandidate StarCatalogEntry, primaryMatch StarCatalogEntry, hasPrimaryMatch bool, primaryError float64, maxMatches int) []CatalogMatch {
+	maxMatches = clampInt(maxMatches, minimumCatalogMatchesPerStar, maximumCatalogMatchesPerStar)
+	if maxMatches == 0 {
+		maxMatches = defaultCatalogMatchesPerStar
+	}
+
+	matches := make([]CatalogMatch, 0, len(ActiveCatalogProvider().Entries))
+	if hasPrimaryMatch {
+		matches = append(matches, CatalogMatch{
+			Name:            primaryMatch.Name,
+			Constellation:   primaryMatch.Constellation,
+			VisualMagnitude: primaryMatch.VisualMagnitude,
+			MagnitudeDelta:  0,
+			AngularErrorDeg: primaryError,
+		})
+	}
+
+	estimatedMagnitude := estimateVisualMagnitude(detectedStar.Brightness)
+	for _, catalogEntry := range ActiveCatalogProvider().Entries {
+		if hasPrimaryMatch && catalogEntry.Name == primaryMatch.Name {
+			continue
+		}
+		catalogEntryOffset := catalogOffsetVector(centerCandidate, catalogEntry)
+		matches = append(matches, CatalogMatch{
+			Name:            catalogEntry.Name,
+			Constellation:   catalogEntry.Constellation,
+			VisualMagnitude: catalogEntry.VisualMagnitude,
+			MagnitudeDelta:  math.Abs(catalogEntry.VisualMagnitude - estimatedMagnitude),
+			AngularErrorDeg: vectorLength(catalogEntryOffset),
+		})
+	}
+
+	sort.Slice(matches, func(leftIndex int, rightIndex int) bool {
+		leftScore := matches[leftIndex].AngularErrorDeg + (0.4 * matches[leftIndex].MagnitudeDelta)
+		rightScore := matches[rightIndex].AngularErrorDeg + (0.4 * matches[rightIndex].MagnitudeDelta)
+		return leftScore < rightScore
+	})
+
+	if maxMatches > len(matches) {
+		maxMatches = len(matches)
+	}
+	return matches[:maxMatches]
+}
+
+func collectCatalogNeighbors(centerCandidate StarCatalogEntry, catalogEntries []StarCatalogEntry, maxRadiusDegrees float64) []StarCatalogEntry {
+	neighbors := make([]StarCatalogEntry, 0, len(catalogEntries))
+	for _, catalogEntry := range catalogEntries {
+		if catalogEntry.Name == centerCandidate.Name {
+			continue
+		}
+		offset := catalogOffsetVector(centerCandidate, catalogEntry)
+		if vectorLength(offset) <= maxRadiusDegrees {
+			neighbors = append(neighbors, catalogEntry)
+		}
+	}
+	return neighbors
+}
+
+func catalogOffsetVector(centerCandidate StarCatalogEntry, otherEntry StarCatalogEntry) vector2 {
+	raDifferenceDegrees := raDifferenceHoursSigned(centerCandidate.RightAscensionHour, otherEntry.RightAscensionHour) * 15.0
+	declinationAverageRadians := ((centerCandidate.DeclinationDeg + otherEntry.DeclinationDeg) / 2.0) * (math.Pi / 180.0)
+	xOffset := raDifferenceDegrees * math.Cos(declinationAverageRadians)
+	yOffset := otherEntry.DeclinationDeg - centerCandidate.DeclinationDeg
+	return vector2{x: xOffset, y: yOffset}
+}
+
+func raDifferenceHoursSigned(leftRA float64, rightRA float64) float64 {
+	difference := rightRA - leftRA
+	for difference > 12 {
+		difference -= 24
+	}
+	for difference < -12 {
+		difference += 24
+	}
+	return difference
 }
 
 func computeBrightnessStats(frame image.Image, bounds image.Rectangle) (float64, float64) {
@@ -192,37 +406,37 @@ func selectBrightCandidates(candidates []rawPhotoStar, maxStars int, frameWidth 
 	return selected
 }
 
-func findCatalogMatchesByBrightness(starBrightness float64, maxMatches int) []CatalogMatch {
-	if len(brightStarCatalog) == 0 {
-		return nil
-	}
-	maxMatches = clampInt(maxMatches, minimumCatalogMatchesPerStar, maximumCatalogMatchesPerStar)
-	if maxMatches == 0 {
-		maxMatches = defaultCatalogMatchesPerStar
-	}
-
-	estimatedMagnitude := estimateVisualMagnitude(starBrightness)
-	matches := make([]CatalogMatch, 0, len(brightStarCatalog))
-	for _, starEntry := range brightStarCatalog {
-		matches = append(matches, CatalogMatch{
-			Name:            starEntry.Name,
-			Constellation:   starEntry.Constellation,
-			VisualMagnitude: starEntry.VisualMagnitude,
-			MagnitudeDelta:  math.Abs(starEntry.VisualMagnitude - estimatedMagnitude),
-		})
-	}
-
-	sort.Slice(matches, func(leftIndex int, rightIndex int) bool {
-		return matches[leftIndex].MagnitudeDelta < matches[rightIndex].MagnitudeDelta
-	})
-	if maxMatches > len(matches) {
-		maxMatches = len(matches)
-	}
-	return matches[:maxMatches]
-}
-
 func estimateVisualMagnitude(starBrightness float64) float64 {
 	clampedBrightness := clampFloat64(starBrightness, 0, 255)
 	brightnessRatio := clampedBrightness / 255
 	return 3.5 - (brightnessRatio * 5.0)
+}
+
+func vectorFromPoints(start vector2, end vector2) vector2 {
+	return vector2{x: end.x - start.x, y: end.y - start.y}
+}
+
+func vectorLength(source vector2) float64 {
+	return math.Hypot(source.x, source.y)
+}
+
+func vectorAngle(source vector2) float64 {
+	return math.Atan2(source.y, source.x)
+}
+
+func scaleVector(source vector2, factor float64) vector2 {
+	return vector2{x: source.x * factor, y: source.y * factor}
+}
+
+func rotateVector(source vector2, rotationRadians float64) vector2 {
+	cosAngle := math.Cos(rotationRadians)
+	sinAngle := math.Sin(rotationRadians)
+	return vector2{
+		x: (source.x * cosAngle) - (source.y * sinAngle),
+		y: (source.x * sinAngle) + (source.y * cosAngle),
+	}
+}
+
+func subtractVectors(left vector2, right vector2) vector2 {
+	return vector2{x: left.x - right.x, y: left.y - right.y}
 }

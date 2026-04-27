@@ -252,6 +252,7 @@ func main() {
 	http.HandleFunc("/api/guiding/analyze", handleGuidingAnalyze)
 	http.HandleFunc("/api/guiding/catalog/search", handleGuidingCatalogSearch)
 	http.HandleFunc("/api/guiding/catalog/nearest", handleGuidingCatalogNearest)
+	http.HandleFunc("/api/guiding/catalog/providers", handleGuidingCatalogProviders)
 	http.HandleFunc("/api/guiding/catalog/identify-photo", handleGuidingCatalogPhotoIdentify)
 	http.HandleFunc("/api/guiding/native-open-image", handleGuidingNativeImageOpen)
 	http.HandleFunc("/", handleRequest)
@@ -1591,6 +1592,18 @@ func handleGuidingCatalogNearest(writer http.ResponseWriter, request *http.Reque
 	}
 
 	writeJSON(writer, guiding.FindNearestStar(nearestRequest.RightAscensionHour, nearestRequest.DeclinationDeg))
+}
+
+func handleGuidingCatalogProviders(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSONError(writer, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	writeJSON(writer, map[string]any{
+		"active_provider": guiding.ActiveCatalogProvider().ID,
+		"providers":       guiding.ListCatalogProviders(),
+	})
 }
 
 func handleGuidingCatalogPhotoIdentify(writer http.ResponseWriter, request *http.Request) {
