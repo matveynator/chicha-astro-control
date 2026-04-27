@@ -521,28 +521,6 @@
     </section>
   </section>
 
-  <section class="layout">
-    <article class="panel">
-      <h2 id="panel-ports-title">ECX-1000 DIO/GPIO ports:</h2>
-      <section class="port-indicator-table">
-        <div id="port-indicator-grid" class="port-indicator-grid"></div>
-        <div class="port-indicator-footer">
-          <span id="ports-di-range">DI 1-8</span>
-          <span id="ports-do-range">DO 11-18</span>
-          <span id="ports-pin20">PIN20: external VDC</span>
-          <span id="port-link-state" class="port-indicator-link-state">WS: connecting…</span>
-        </div>
-      </section>
-      <p id="panel-ports-subtitle" class="panel-subtitle">Sensors (physical pins 1..8)</p>
-      <div id="input-grid" class="channels"></div>
-    </article>
-
-    <article class="panel">
-      <h2 id="panel-outputs-title">Hardware control (physical pins 11..18)</h2>
-      <div id="output-grid" class="channels"></div>
-    </article>
-  </section>
-
   <section class="guiding-panel">
     <div class="guiding-canvas-wrap">
       <canvas id="guiding-canvas" class="guiding-canvas" width="800" height="450"></canvas>
@@ -566,8 +544,34 @@
         <input id="guiding-catalog-name-input" type="text" placeholder="Vega">
       </label>
       <button id="guiding-catalog-search-button" type="button">Find in catalog</button>
+      <label class="guiding-field">
+        Stars from photo
+        <input id="guiding-photo-stars-input" type="number" min="3" max="12" value="6">
+      </label>
+      <button id="guiding-photo-identify-button" type="button">Identify center + surrounding</button>
       <div id="guiding-log" class="guiding-log">Load a frame, click a star, then run Analyze frame.</div>
     </aside>
+  </section>
+  <section class="layout">
+    <article class="panel">
+      <h2 id="panel-ports-title">ECX-1000 DIO/GPIO ports:</h2>
+      <section class="port-indicator-table">
+        <div id="port-indicator-grid" class="port-indicator-grid"></div>
+        <div class="port-indicator-footer">
+          <span id="ports-di-range">DI 1-8</span>
+          <span id="ports-do-range">DO 11-18</span>
+          <span id="ports-pin20">PIN20: external VDC</span>
+          <span id="port-link-state" class="port-indicator-link-state">WS: connecting…</span>
+        </div>
+      </section>
+      <p id="panel-ports-subtitle" class="panel-subtitle">Sensors (physical pins 1..8)</p>
+      <div id="input-grid" class="channels"></div>
+    </article>
+
+    <article class="panel">
+      <h2 id="panel-outputs-title">Hardware control (physical pins 11..18)</h2>
+      <div id="output-grid" class="channels"></div>
+    </article>
   </section>
   <footer class="repository-footer">
     <a href="https://github.com/matveynator/chicha-astro-control" id="repository-link">https://github.com/matveynator/chicha-astro-control</a>
@@ -651,6 +655,8 @@
   const guidingSearchRadiusInputElement = document.getElementById("guiding-search-radius-input");
   const guidingCatalogNameInputElement = document.getElementById("guiding-catalog-name-input");
   const guidingCatalogSearchButtonElement = document.getElementById("guiding-catalog-search-button");
+  const guidingPhotoStarsInputElement = document.getElementById("guiding-photo-stars-input");
+  const guidingPhotoIdentifyButtonElement = document.getElementById("guiding-photo-identify-button");
   const guidingLogElement = document.getElementById("guiding-log");
   const controlChannelSocketsByChannel = {};
   let outputControlRequestSequence = 1;
@@ -792,6 +798,9 @@
   });
   guidingCatalogSearchButtonElement.addEventListener("click", function handleCatalogSearchClick() {
     void searchCatalogStarByName();
+  });
+  guidingPhotoIdentifyButtonElement.addEventListener("click", function handlePhotoCatalogIdentifyClick() {
+    void identifyStarsFromPhoto();
   });
 
   window.addEventListener("resize", updateApplicationScale);
@@ -1808,6 +1817,57 @@
       renderGuidingLog();
     } catch (catalogError) {
       applicationModel.guidingCorrectionHint = "Catalog search failed: " + String(catalogError);
+      renderGuidingLog();
+    }
+  }
+
+  async function identifyStarsFromPhoto() {
+    if (!applicationModel.guidingImageBase64) {
+      applicationModel.guidingCorrectionHint = "Load a frame before photo catalog search.";
+      renderGuidingLog();
+      return;
+    }
+
+    const maxStars = Number(guidingPhotoStarsInputElement.value || "6");
+    try {
+      const identifyResponse = await fetch("/api/guiding/catalog/identify-photo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image_data: applicationModel.guidingImageBase64,
+          max_stars: maxStars,
+          max_catalog_matches: 3
+        })
+      });
+      if (!identifyResponse.ok) {
+        throw new Error(await identifyResponse.text());
+      }
+
+      const photoCatalogPayload = await identifyResponse.json();
+      const centerStar = photoCatalogPayload.center_star || {};
+      const centerCatalogMatches = Array.isArray(centerStar.catalog_matches) ? centerStar.catalog_matches : [];
+      if (centerCatalogMatches.length === 0) {
+        applicationModel.guidingCorrectionHint = "Photo catalog: no center-star match.";
+        renderGuidingLog();
+        return;
+      }
+
+      const centerBestMatch = centerCatalogMatches[0];
+      const surroundingStars = Array.isArray(photoCatalogPayload.surrounding_stars) ? photoCatalogPayload.surrounding_stars : [];
+      const surroundingDescriptions = surroundingStars.slice(0, 4).map(function mapSurroundingStar(starEntry, starIndex) {
+        const starMatches = Array.isArray(starEntry.catalog_matches) ? starEntry.catalog_matches : [];
+        if (starMatches.length === 0) {
+          return "#" + String(starIndex + 1) + ": unknown";
+        }
+        const bestNearbyMatch = starMatches[0];
+        return "#" + String(starIndex + 1) + ": " + bestNearbyMatch.name + " (" + bestNearbyMatch.constellation + ")";
+      });
+
+      applicationModel.guidingCorrectionHint =
+        "Photo catalog: center≈" + centerBestMatch.name + " (" + centerBestMatch.constellation + "). Nearby: " + surroundingDescriptions.join(", ");
+      renderGuidingLog();
+    } catch (identifyError) {
+      applicationModel.guidingCorrectionHint = "Photo catalog search failed: " + String(identifyError);
       renderGuidingLog();
     }
   }
