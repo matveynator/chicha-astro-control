@@ -770,6 +770,14 @@
     }
     void loadGuidingFrameFromFile(selectedImageFile);
   });
+  guidingImageFileInputElement.addEventListener("click", function handleGuidingFileInputClick(clickEvent) {
+    if (!isMacOSPlatform()) {
+      return;
+    }
+
+    clickEvent.preventDefault();
+    void loadGuidingFrameViaNativeMacOSPicker();
+  });
   guidingAnalyzeButtonElement.addEventListener("click", function handleAnalyzeButtonClick() {
     void analyzeGuidingFrame();
   });
@@ -1613,6 +1621,29 @@
       fileReader.readAsDataURL(selectedImageFile);
     });
 
+    await loadGuidingFrameFromDataURL(loadedDataURL);
+  }
+
+  async function loadGuidingFrameViaNativeMacOSPicker() {
+    await runServerCommand(async function loadNativeGuidingFrameCommand() {
+      const nativePickerResponse = await fetch("/api/guiding/native-open-image", {
+        method: "POST"
+      });
+      if (!nativePickerResponse.ok) {
+        throw new Error(await nativePickerResponse.text());
+      }
+
+      const nativeFilePayload = await nativePickerResponse.json();
+      if (!nativeFilePayload || typeof nativeFilePayload.data_url !== "string" || nativeFilePayload.data_url.trim() === "") {
+        throw new Error("Native macOS file picker returned empty payload.");
+      }
+      await loadGuidingFrameFromDataURL(nativeFilePayload.data_url);
+      applicationModel.errorText = "";
+      guidingImageFileInputElement.value = "";
+    });
+  }
+
+  async function loadGuidingFrameFromDataURL(loadedDataURL) {
     const loadedImageElement = await createImageElementFromSource(loadedDataURL);
     applicationModel.guidingImageBase64 = loadedDataURL;
     applicationModel.guidingImageElement = loadedImageElement;
@@ -1621,6 +1652,11 @@
     applicationModel.guidingCorrectionHint = "Frame loaded. Click a star to set guide target.";
     renderGuidingCanvas();
     renderGuidingLog();
+  }
+
+  function isMacOSPlatform() {
+    const platformText = String(navigator.platform || "").toLowerCase();
+    return platformText.indexOf("mac") >= 0;
   }
 
   function createImageElementFromSource(imageSourceURL) {

@@ -1,0 +1,187 @@
+name: Stable Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.24.x"
+  RELEASE_TAG: stable-release
+
+jobs:
+  build-linux:
+    if: github.event_name == 'workflow_dispatch' || contains(join(github.event.commits.*.message, ' || '), 'stable release') || contains(join(github.event.commits.*.message, ' || '), 'Stable Release')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: ubuntu-24.04
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Install Linux desktop build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          WEBKIT_DEV_PACKAGE="libwebkit2gtk-4.0-dev"
+          if ! apt-cache show "${WEBKIT_DEV_PACKAGE}" >/dev/null 2>&1; then
+            WEBKIT_DEV_PACKAGE="libwebkit2gtk-4.1-dev"
+          fi
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev "${WEBKIT_DEV_PACKAGE}"
+          if ! pkg-config --exists webkit2gtk-4.0 && pkg-config --exists webkit2gtk-4.1; then
+            sudo install -d /usr/local/lib/pkgconfig
+            printf '%s\n' \
+              'prefix=/usr' \
+              'exec_prefix=${prefix}' \
+              'libdir=${exec_prefix}/lib' \
+              'includedir=${prefix}/include' \
+              '' \
+              'Name: webkit2gtk-4.0' \
+              'Description: Compatibility shim for webkit2gtk-4.1' \
+              'Version: 4.0' \
+              'Requires: webkit2gtk-4.1' \
+              'Libs:' \
+              'Cflags:' \
+              | sudo tee /usr/local/lib/pkgconfig/webkit2gtk-4.0.pc >/dev/null
+            echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          fi
+      - name: Build Linux binary
+        shell: bash
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BIN="chicha-astro-control_linux_${GOARCH}"
+          go build -trimpath -ldflags "-s -w" -o "dist/${BIN}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.goarch }}
+          path: dist/chicha-astro-control_linux_${{ matrix.goarch }}
+
+  build-windows:
+    if: github.event_name == 'workflow_dispatch' || contains(join(github.event.commits.*.message, ' || '), 'stable release') || contains(join(github.event.commits.*.message, ' || '), 'Stable Release')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: windows-latest
+          - goarch: arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Build Windows binary
+        shell: pwsh
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $bin = "chicha-astro-control_windows_${env:GOARCH}.exe"
+          go build -trimpath -ldflags "-s -w" -o "dist/$bin" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.goarch }}
+          path: dist/chicha-astro-control_windows_${{ matrix.goarch }}.exe
+
+  build-macos:
+    if: github.event_name == 'workflow_dispatch' || contains(join(github.event.commits.*.message, ' || '), 'stable release') || contains(join(github.event.commits.*.message, ' || '), 'Stable Release')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Build macOS amd64 and arm64 binaries
+        shell: bash
+        env:
+          CGO_ENABLED: 1
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          export GOOS=darwin
+
+          export GOARCH=amd64
+          export CC="clang -arch x86_64"
+          export CXX="clang++ -arch x86_64"
+          export MACOSX_DEPLOYMENT_TARGET=10.13
+          export CGO_CFLAGS="-arch x86_64 -mmacosx-version-min=10.13"
+          export CGO_CXXFLAGS="-arch x86_64 -mmacosx-version-min=10.13"
+          export CGO_LDFLAGS="-arch x86_64 -mmacosx-version-min=10.13"
+          go build -trimpath -ldflags "-s -w" -o dist/chicha-astro-control_darwin_amd64 .
+
+          export GOARCH=arm64
+          export CC="clang -arch arm64"
+          export CXX="clang++ -arch arm64"
+          export MACOSX_DEPLOYMENT_TARGET=11.0
+          export CGO_CFLAGS="-arch arm64 -mmacosx-version-min=11.0"
+          export CGO_CXXFLAGS="-arch arm64 -mmacosx-version-min=11.0"
+          export CGO_LDFLAGS="-arch arm64 -mmacosx-version-min=11.0"
+          go build -trimpath -ldflags "-s -w" -o dist/chicha-astro-control_darwin_arm64 .
+
+          lipo -create \
+            dist/chicha-astro-control_darwin_amd64 \
+            dist/chicha-astro-control_darwin_arm64 \
+            -output dist/chicha-astro-control_darwin_universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            dist/chicha-astro-control_darwin_amd64
+            dist/chicha-astro-control_darwin_arm64
+            dist/chicha-astro-control_darwin_universal
+
+  publish-release:
+    if: github.event_name == 'workflow_dispatch' || contains(join(github.event.commits.*.message, ' || '), 'stable release') || contains(join(github.event.commits.*.message, ' || '), 'Stable Release')
+    runs-on: ubuntu-24.04
+    needs:
+      - build-linux
+      - build-windows
+      - build-macos
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find dist -type f -exec cp {} release-assets/ \;
+      - name: Publish stable release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Stable Release
+          body: |
+            Latest stable binaries.
+            
+            Trigger condition: push to main with commit message containing `stable release`, or manual dispatch.
+          make_latest: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: release-assets/*
