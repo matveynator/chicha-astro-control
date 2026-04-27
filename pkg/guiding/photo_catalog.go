@@ -71,14 +71,7 @@ func IdentifyStarsFromPhoto(frame image.Image, maxStars int, maxCatalogMatches i
 		return PhotoCatalogResult{}, errors.New("frame is too small for star detection")
 	}
 
-	maxStars = clampInt(maxStars, minimumPhotoSearchStarLimit, maximumPhotoSearchStarLimit)
-	if maxStars == 0 {
-		maxStars = defaultPhotoSearchStarLimit
-	}
-	maxCatalogMatches = clampInt(maxCatalogMatches, minimumCatalogMatchesPerStar, maximumCatalogMatchesPerStar)
-	if maxCatalogMatches == 0 {
-		maxCatalogMatches = defaultCatalogMatchesPerStar
-	}
+	maxStars, maxCatalogMatches = resolvePhotoIdentifyLimits(maxStars, maxCatalogMatches)
 
 	meanBrightness, standardDeviation := computeBrightnessStats(frame, bounds)
 	minimumBrightness := meanBrightness + (1.2 * standardDeviation)
@@ -410,6 +403,22 @@ func estimateVisualMagnitude(starBrightness float64) float64 {
 	clampedBrightness := clampFloat64(starBrightness, 0, 255)
 	brightnessRatio := clampedBrightness / 255
 	return 3.5 - (brightnessRatio * 5.0)
+}
+
+func resolvePhotoIdentifyLimits(rawMaxStars int, rawMaxCatalogMatches int) (int, int) {
+	resolvedMaxStars := rawMaxStars
+	if resolvedMaxStars == 0 {
+		resolvedMaxStars = defaultPhotoSearchStarLimit
+	}
+	resolvedMaxStars = clampInt(resolvedMaxStars, minimumPhotoSearchStarLimit, maximumPhotoSearchStarLimit)
+
+	resolvedMaxCatalogMatches := rawMaxCatalogMatches
+	if resolvedMaxCatalogMatches == 0 {
+		resolvedMaxCatalogMatches = defaultCatalogMatchesPerStar
+	}
+	resolvedMaxCatalogMatches = clampInt(resolvedMaxCatalogMatches, minimumCatalogMatchesPerStar, maximumCatalogMatchesPerStar)
+
+	return resolvedMaxStars, resolvedMaxCatalogMatches
 }
 
 func vectorFromPoints(start vector2, end vector2) vector2 {

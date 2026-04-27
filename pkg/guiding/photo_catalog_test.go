@@ -45,6 +45,26 @@ func TestIdentifyStarsFromPhotoReturnsErrorWhenNoCandidatesFound(t *testing.T) {
 	}
 }
 
+func TestResolvePhotoIdentifyLimitsAppliesDefaultsBeforeClamp(t *testing.T) {
+	resolvedMaxStars, resolvedMaxCatalogMatches := resolvePhotoIdentifyLimits(0, 0)
+	if resolvedMaxStars != defaultPhotoSearchStarLimit {
+		t.Fatalf("expected default max stars %d, got %d", defaultPhotoSearchStarLimit, resolvedMaxStars)
+	}
+	if resolvedMaxCatalogMatches != defaultCatalogMatchesPerStar {
+		t.Fatalf("expected default max catalog matches %d, got %d", defaultCatalogMatchesPerStar, resolvedMaxCatalogMatches)
+	}
+}
+
+func TestResolvePhotoIdentifyLimitsClampsExplicitValues(t *testing.T) {
+	resolvedMaxStars, resolvedMaxCatalogMatches := resolvePhotoIdentifyLimits(99, -7)
+	if resolvedMaxStars != maximumPhotoSearchStarLimit {
+		t.Fatalf("expected clamped max stars %d, got %d", maximumPhotoSearchStarLimit, resolvedMaxStars)
+	}
+	if resolvedMaxCatalogMatches != minimumCatalogMatchesPerStar {
+		t.Fatalf("expected clamped max catalog matches %d, got %d", minimumCatalogMatchesPerStar, resolvedMaxCatalogMatches)
+	}
+}
+
 func mustFindCatalogStarByNameForTest(t *testing.T, targetName string) StarCatalogEntry {
 	t.Helper()
 	for _, catalogEntry := range ActiveCatalogProvider().Entries {
