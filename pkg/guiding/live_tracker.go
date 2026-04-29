@@ -220,9 +220,10 @@ const defaultAutoPulseMaxMs = 120
 func setLiveTrackerAutoPulseConfig(currentState liveTrackerState, config AutoPulseConfig) (liveTrackerState, error) {
 	nextState := currentState
 	nextState.autoPulseConfig.Enabled = config.Enabled
-	nextState.autoPulseConfig.MaxPulseMs = clampInt(config.MaxPulseMs, defaultManualHintMinimumPulseMs, defaultManualHintMaximumPulseMs)
-	if nextState.autoPulseConfig.MaxPulseMs == 0 {
+	if config.MaxPulseMs <= 0 {
 		nextState.autoPulseConfig.MaxPulseMs = defaultAutoPulseMaxMs
+	} else {
+		nextState.autoPulseConfig.MaxPulseMs = clampInt(config.MaxPulseMs, defaultManualHintMinimumPulseMs, defaultManualHintMaximumPulseMs)
 	}
 	nextState.lastAutoPulse = buildAutoPulseCommand(nextState.operatorHint, nextState.autoPulseConfig)
 	return nextState, nil

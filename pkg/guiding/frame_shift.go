@@ -86,10 +86,11 @@ func AnalyzeFrameShift(request FrameShiftRequest) (FrameShiftResult, error) {
 		return FrameShiftResult{}, errors.New("reference and current frame sizes must match")
 	}
 
-	maxStars := clampInt(request.MaxStars, minimumGuideStarLimit, maximumGuideStarLimit)
-	if maxStars == 0 {
+	maxStars := request.MaxStars
+	if maxStars <= 0 {
 		maxStars = defaultGuideStarLimit
 	}
+	maxStars = clampInt(maxStars, minimumGuideStarLimit, maximumGuideStarLimit)
 
 	referenceStars := detectGuideStars(request.ReferenceFrame, maxStars)
 	currentStars := detectGuideStars(request.CurrentFrame, maxStars)
