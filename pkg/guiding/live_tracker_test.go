@@ -16,7 +16,7 @@ func TestLiveTrackerSessionLifecycle(t *testing.T) {
 	startSnapshot, startError := tracker.StartSession(LiveTrackerSessionConfig{
 		ReferenceFrame: referenceFrame,
 		MaxStars:       40,
-		PixelToMotor:   PixelToMotorMatrix{A: 4.0, D: 4.0},
+		PixelToMotor:   PixelToMotorMatrix{A: 40.0, D: 40.0},
 	})
 	if startError != nil {
 		t.Fatalf("expected no start error, got %v", startError)
@@ -38,6 +38,9 @@ func TestLiveTrackerSessionLifecycle(t *testing.T) {
 	if firstSnapshot.LastResult.Confidence < 0.4 {
 		t.Fatalf("expected confidence >= 0.4, got %f", firstSnapshot.LastResult.Confidence)
 	}
+	if !firstSnapshot.OperatorHint.ShouldAct {
+		t.Fatalf("expected operator hint to request manual action")
+	}
 
 	secondSnapshot, secondError := tracker.AnalyzeFrame(secondLiveFrame)
 	if secondError != nil {
@@ -48,6 +51,9 @@ func TestLiveTrackerSessionLifecycle(t *testing.T) {
 	}
 	if secondSnapshot.LastResult.FrameIndex != 2 {
 		t.Fatalf("expected last frame index 2, got %d", secondSnapshot.LastResult.FrameIndex)
+	}
+	if secondSnapshot.OperatorHint.Summary == "" {
+		t.Fatalf("expected operator summary to be non-empty")
 	}
 }
 

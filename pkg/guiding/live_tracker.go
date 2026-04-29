@@ -10,13 +10,14 @@ type LiveTracker struct {
 }
 
 type LiveTrackerSnapshot struct {
-	SessionActive    bool             `json:"session_active"`
-	ReferenceWidth   int              `json:"reference_width"`
-	ReferenceHeight  int              `json:"reference_height"`
-	ProcessedFrames  int              `json:"processed_frames"`
-	SuccessfulFrames int              `json:"successful_frames"`
-	FailedFrames     int              `json:"failed_frames"`
-	LastResult       FrameSeriesPoint `json:"last_result"`
+	SessionActive    bool                   `json:"session_active"`
+	ReferenceWidth   int                    `json:"reference_width"`
+	ReferenceHeight  int                    `json:"reference_height"`
+	ProcessedFrames  int                    `json:"processed_frames"`
+	SuccessfulFrames int                    `json:"successful_frames"`
+	FailedFrames     int                    `json:"failed_frames"`
+	LastResult       FrameSeriesPoint       `json:"last_result"`
+	OperatorHint     ManualCorrectionAdvice `json:"operator_hint"`
 }
 
 type LiveTrackerSessionConfig struct {
@@ -46,6 +47,7 @@ type liveTrackerState struct {
 	successfulFrames int
 	failedFrames     int
 	lastResult       FrameSeriesPoint
+	operatorHint     ManualCorrectionAdvice
 }
 
 // StartLiveTracker creates a goroutine-owned session tracker for step-3 live frame analysis.
@@ -119,6 +121,7 @@ func startLiveTrackerSession(currentState liveTrackerState, config LiveTrackerSe
 		successfulFrames: 0,
 		failedFrames:     0,
 		lastResult:       FrameSeriesPoint{},
+		operatorHint:     ManualCorrectionAdvice{},
 	}, nil
 }
 
@@ -140,6 +143,10 @@ func analyzeLiveTrackerFrame(currentState liveTrackerState, frame image.Image) (
 	if shiftError != nil {
 		nextState.failedFrames += 1
 		nextState.lastResult = FrameSeriesPoint{FrameIndex: currentFrameIndex, Error: shiftError.Error()}
+		nextState.operatorHint = ManualCorrectionAdvice{
+			ShouldAct: false,
+			Summary:   "Frame solve failed. Wait for the next frame before manual correction.",
+		}
 		return nextState, shiftError
 	}
 
@@ -155,6 +162,12 @@ func analyzeLiveTrackerFrame(currentState liveTrackerState, frame image.Image) (
 		SuggestedMotorY: shiftResult.SuggestedMotor.MotorYMs,
 		Raw:             &shiftResult,
 	}
+	nextState.operatorHint = BuildManualCorrectionAdvice(
+		shiftResult.DeltaX,
+		shiftResult.DeltaY,
+		shiftResult.SuggestedMotor.MotorXMs,
+		shiftResult.SuggestedMotor.MotorYMs,
+	)
 	return nextState, nil
 }
 
@@ -174,5 +187,6 @@ func buildLiveTrackerSnapshot(state liveTrackerState) LiveTrackerSnapshot {
 		SuccessfulFrames: state.successfulFrames,
 		FailedFrames:     state.failedFrames,
 		LastResult:       state.lastResult,
+		OperatorHint:     state.operatorHint,
 	}
 }
